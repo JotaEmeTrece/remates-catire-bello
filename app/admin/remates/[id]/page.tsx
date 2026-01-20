@@ -628,7 +628,7 @@ export default function AdminRemateDetailPage() {
       const { error: rpcErr } = await supabase.rpc("liquidar_remate", { p_remate_id: remate.id })
       if (rpcErr) throw new Error(rpcErr.message)
 
-      const top = topByHorse.get(horse.id) ?? null
+      const top = horse.id ? (topByHorse.get(horse.id) ?? null) : null
       const ganadorLabel = top?.usuario?.username
         ? top.usuario.username
         : top
@@ -677,7 +677,7 @@ export default function AdminRemateDetailPage() {
   const totals = useMemo(() => {
     let bruto = 0
     for (const h of horses) {
-      const bid = topByHorse.get(h.id)
+      const bid = h.id ? topByHorse.get(h.id) : undefined
       bruto += bid ? n(bid.monto) : n(h.precio_salida)
     }
     const casaPct = 25
