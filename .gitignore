@@ -22,6 +22,7 @@ node_modules
 
 # misc
 .DS_Store
+public/Desktop.ini
 *.pem
 
 # debug

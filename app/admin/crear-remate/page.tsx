@@ -3,6 +3,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import type { Dispatch, SetStateAction } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
@@ -12,9 +13,15 @@ type HorseDraft = {
   numero: string
   nombre: string
   jinete: string
-  entrenador: string
   comentarios: string
   precio_salida: string
+}
+
+type PriceRuleDraft = {
+  tempId: string
+  min_precio: string
+  max_precio: string
+  incremento: string
 }
 
 function uid() {
@@ -68,12 +75,31 @@ export default function AdminCrearRematePage() {
 
   // =========================
   // Caballos (horses) - lista dinámica
-  // NOTA: precio_salida es opcional: si lo dejas vacío, no lo mandamos.
+  // NOTA: precio_salida es obligatorio (precio inicial del caballo).
   // =========================
   const [horses, setHorses] = useState<HorseDraft[]>([
-    { tempId: uid(), numero: "1", nombre: "Relámpago", jinete: "J1", entrenador: "E1", comentarios: "Caballo veloz", precio_salida: "60" },
-    { tempId: uid(), numero: "2", nombre: "Tormenta", jinete: "J2", entrenador: "E2", comentarios: "", precio_salida: "60" },
+    { tempId: uid(), numero: "1", nombre: "Relámpago", jinete: "J1", comentarios: "Caballo veloz", precio_salida: "60" },
+    { tempId: uid(), numero: "2", nombre: "Tormenta", jinete: "J2", comentarios: "", precio_salida: "60" },
   ])
+
+  // =========================
+  // Reglas de precio (default y por caballo)
+  // =========================
+  const [defaultRules, setDefaultRules] = useState<PriceRuleDraft[]>([
+    { tempId: uid(), min_precio: "0", max_precio: "100", incremento: "20" },
+    { tempId: uid(), min_precio: "100", max_precio: "300", incremento: "30" },
+    { tempId: uid(), min_precio: "300", max_precio: "600", incremento: "40" },
+    { tempId: uid(), min_precio: "600", max_precio: "1000", incremento: "50" },
+    { tempId: uid(), min_precio: "1000", max_precio: "2000", incremento: "100" },
+    { tempId: uid(), min_precio: "2000", max_precio: "5000", incremento: "200" },
+    { tempId: uid(), min_precio: "5000", max_precio: "10000", incremento: "300" },
+    { tempId: uid(), min_precio: "10000", max_precio: "20000", incremento: "500" },
+    { tempId: uid(), min_precio: "20000", max_precio: "30000", incremento: "800" },
+    { tempId: uid(), min_precio: "30000", max_precio: "", incremento: "1000" },
+  ])
+  const [useDefaultRules, setUseDefaultRules] = useState(true)
+  const [horseRulesEnabled, setHorseRulesEnabled] = useState<Record<string, boolean>>({})
+  const [horseRulesByTempId, setHorseRulesByTempId] = useState<Record<string, PriceRuleDraft[]>>({})
 
   // =========================
   // Guard: asegurar que es admin
@@ -82,19 +108,19 @@ export default function AdminCrearRematePage() {
     const { data: auth, error: authErr } = await supabase.auth.getUser()
     if (authErr) throw new Error(authErr.message)
     if (!auth?.user) {
-      router.replace("/login")
+      router.replace("/admin/login")
       return null
     }
 
     const { data: prof, error: profErr } = await supabase
       .from("profiles")
-      .select("id,es_admin")
+      .select("id,es_admin,es_super_admin")
       .eq("id", auth.user.id)
       .maybeSingle()
 
     if (profErr) throw new Error(profErr.message)
 
-    if (!prof?.es_admin) {
+    if (!prof?.es_admin && !prof?.es_super_admin) {
       router.replace("/dashboard")
       return null
     }
@@ -110,7 +136,7 @@ export default function AdminCrearRematePage() {
         const aid = await ensureAdmin()
         if (!aid) return
       } catch (e: any) {
-        setError(e?.message || "Error de sesión admin")
+        setError(e?.message || "Error de sesion admin")
       } finally {
         setLoading(false)
       }
@@ -138,9 +164,46 @@ export default function AdminCrearRematePage() {
     for (const h of horses) {
       if (!h.numero.trim()) return false
       if (!h.nombre.trim()) return false
+      if (!h.jinete.trim()) return false
+      if (!h.precio_salida.trim()) return false
+      if (!(n(h.precio_salida) > 0)) return false
     }
+
+    function validRules(list: PriceRuleDraft[]) {
+      if (!list || list.length === 0) return false
+      for (const r of list) {
+        const min = n(r.min_precio)
+        const inc = n(r.incremento)
+        const max = r.max_precio.trim() ? n(r.max_precio) : null
+        if (!(min >= 0)) return false
+        if (!(inc > 0)) return false
+        if (max !== null && !(max > min)) return false
+      }
+      return true
+    }
+
+    if (useDefaultRules && !validRules(defaultRules)) return false
+    for (const h of horses) {
+      if (horseRulesEnabled[h.tempId]) {
+        const list = horseRulesByTempId[h.tempId] || []
+        if (!validRules(list)) return false
+      }
+    }
+
     return true
-  }, [raceNombre, raceFecha, remateNombre, incrementoMinimo, apuestaMinima, porcentajeCasa, horses])
+  }, [
+    raceNombre,
+    raceFecha,
+    remateNombre,
+    incrementoMinimo,
+    apuestaMinima,
+    porcentajeCasa,
+    horses,
+    useDefaultRules,
+    defaultRules,
+    horseRulesEnabled,
+    horseRulesByTempId,
+  ])
 
   function addHorse() {
     const nextNum =
@@ -149,16 +212,66 @@ export default function AdminCrearRematePage() {
         : "1"
     setHorses((prev) => [
       ...prev,
-      { tempId: uid(), numero: nextNum, nombre: "", jinete: "", entrenador: "", comentarios: "", precio_salida: apuestaMinima || "" },
+      { tempId: uid(), numero: nextNum, nombre: "", jinete: "", comentarios: "", precio_salida: apuestaMinima || "" },
     ])
   }
 
   function removeHorse(tempId: string) {
     setHorses((prev) => prev.filter((h) => h.tempId !== tempId))
+    setHorseRulesEnabled((prev) => {
+      const next = { ...prev }
+      delete next[tempId]
+      return next
+    })
+    setHorseRulesByTempId((prev) => {
+      const next = { ...prev }
+      delete next[tempId]
+      return next
+    })
   }
 
   function updateHorse(tempId: string, patch: Partial<HorseDraft>) {
     setHorses((prev) => prev.map((h) => (h.tempId === tempId ? { ...h, ...patch } : h)))
+  }
+
+  function addRule(setter: Dispatch<SetStateAction<PriceRuleDraft[]>>) {
+    setter((prev) => [...prev, { tempId: uid(), min_precio: "", max_precio: "", incremento: "" }])
+  }
+
+  function updateRule(
+    setter: Dispatch<SetStateAction<PriceRuleDraft[]>>,
+    tempId: string,
+    patch: Partial<PriceRuleDraft>
+  ) {
+    setter((prev) => prev.map((r) => (r.tempId === tempId ? { ...r, ...patch } : r)))
+  }
+
+  function removeRule(setter: Dispatch<SetStateAction<PriceRuleDraft[]>>, tempId: string) {
+    setter((prev) => prev.filter((r) => r.tempId !== tempId))
+  }
+
+  function addHorseRule(horseTempId: string) {
+    setHorseRulesByTempId((prev) => {
+      const list = prev[horseTempId] || []
+      return { ...prev, [horseTempId]: [...list, { tempId: uid(), min_precio: "", max_precio: "", incremento: "" }] }
+    })
+  }
+
+  function updateHorseRule(horseTempId: string, ruleTempId: string, patch: Partial<PriceRuleDraft>) {
+    setHorseRulesByTempId((prev) => {
+      const list = prev[horseTempId] || []
+      return {
+        ...prev,
+        [horseTempId]: list.map((r) => (r.tempId === ruleTempId ? { ...r, ...patch } : r)),
+      }
+    })
+  }
+
+  function removeHorseRule(horseTempId: string, ruleTempId: string) {
+    setHorseRulesByTempId((prev) => {
+      const list = prev[horseTempId] || []
+      return { ...prev, [horseTempId]: list.filter((r) => r.tempId !== ruleTempId) }
+    })
   }
 
   // =========================
@@ -234,12 +347,12 @@ export default function AdminCrearRematePage() {
           numero: Number(h.numero),
           nombre: h.nombre.trim(),
           jinete: h.jinete.trim() ? h.jinete.trim() : null,
-          entrenador: h.entrenador.trim() ? h.entrenador.trim() : null,
+          precio_salida: n(h.precio_salida),
           comentarios: h.comentarios.trim() ? h.comentarios.trim() : null,
         }
 
         // precio_salida: lo mandamos SOLO si lo llenaron (para no romper si en algún ambiente no existe)
-        if (h.precio_salida.trim()) obj.precio_salida = n(h.precio_salida)
+        // precio_salida ya va en el payload (obligatorio)
 
         return obj
       })
@@ -247,7 +360,65 @@ export default function AdminCrearRematePage() {
       const { error: horsesErr } = await supabase.from("horses").insert(horsesPayload)
       if (horsesErr) throw new Error(horsesErr.message)
 
-      setOk("✅ Listo. Carrera, remate y caballos creados.")
+      // 4) Insertar reglas de precios (default y por caballo)
+      const horseIdByTemp: Record<string, string> = {}
+      if (horsesPayload.length > 0) {
+        const { data: insertedHorses, error: hsErr } = await supabase
+          .from("horses")
+          .select("id,numero")
+          .eq("race_id", raceId)
+
+        if (hsErr) throw new Error(hsErr.message)
+
+        const byNumero = new Map<number, string>()
+        ;(insertedHorses ?? []).forEach((row: any) => {
+          if (row?.numero != null) byNumero.set(Number(row.numero), row.id)
+        })
+
+        horses.forEach((h) => {
+          const id = byNumero.get(Number(h.numero))
+          if (id) horseIdByTemp[h.tempId] = id
+        })
+      }
+
+      const rulesPayload: any[] = []
+
+      if (useDefaultRules) {
+        for (const r of defaultRules) {
+          if (!r.min_precio.trim() || !r.incremento.trim()) continue
+          rulesPayload.push({
+            remate_id: remateId,
+            horse_id: null,
+            min_precio: n(r.min_precio),
+            max_precio: r.max_precio.trim() ? n(r.max_precio) : null,
+            incremento: n(r.incremento),
+          })
+        }
+      }
+
+      for (const h of horses) {
+        if (!horseRulesEnabled[h.tempId]) continue
+        const horseId = horseIdByTemp[h.tempId]
+        if (!horseId) continue
+        const list = horseRulesByTempId[h.tempId] || []
+        for (const r of list) {
+          if (!r.min_precio.trim() || !r.incremento.trim()) continue
+          rulesPayload.push({
+            remate_id: remateId,
+            horse_id: horseId,
+            min_precio: n(r.min_precio),
+            max_precio: r.max_precio.trim() ? n(r.max_precio) : null,
+            incremento: n(r.incremento),
+          })
+        }
+      }
+
+      if (rulesPayload.length > 0) {
+        const { error: rulesErr } = await supabase.from("remate_price_rules").insert(rulesPayload)
+        if (rulesErr) throw new Error(rulesErr.message)
+      }
+
+      setOk("Listo. Carrera, remate y caballos creados.")
     } catch (e: any) {
       setError(e?.message || "Error creando remate")
     } finally {
@@ -264,7 +435,7 @@ export default function AdminCrearRematePage() {
       <div className="mx-auto w-full max-w-md">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold">Admin · Crear remate</h1>
+          <h1 className="text-xl font-bold">Admin - Crear remate</h1>
           <Link href="/admin" className="text-xs text-zinc-300 underline underline-offset-4">
             Volver
           </Link>
@@ -282,7 +453,7 @@ export default function AdminCrearRematePage() {
             {createdRemateId ? (
               <div className="mt-2">
                 <Link href={`/remates/${createdRemateId}`} className="underline underline-offset-4 text-emerald-200">
-                  Ir al remate →
+                  Ir al remate
                 </Link>
               </div>
             ) : null}
@@ -295,12 +466,12 @@ export default function AdminCrearRematePage() {
 
           <div className="mt-3 space-y-3">
             <div>
-              <label className="text-sm text-zinc-200">Nombre</label>
+              <label className="text-sm text-zinc-200">Descripcion de la carrera</label>
               <input
                 value={raceNombre}
                 onChange={(e) => setRaceNombre(e.target.value)}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="Ej: Carrera 1"
+                placeholder="Ej: La Rinconada - Carrera 1 - Clasico..."
               />
             </div>
 
@@ -315,7 +486,7 @@ export default function AdminCrearRematePage() {
                 />
               </div>
               <div>
-                <label className="text-sm text-zinc-200">N° carrera</label>
+                <label className="text-sm text-zinc-200">No. carrera</label>
                 <input
                   inputMode="numeric"
                   value={raceNumeroCarrera}
@@ -398,20 +569,81 @@ export default function AdminCrearRematePage() {
             </div>
 
             <div className="text-xs text-zinc-500">
-              Este “crear rápido” deja el remate <span className="text-zinc-300">abierto</span> para que entres a probar de una.
+              Este "crear rapido" deja el remate <span className="text-zinc-300">abierto</span> para que entres a probar de una.
             </div>
           </div>
+        </section>
+
+        {/* Reglas default */}
+        <section className="mt-3 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold">3) Reglas default</h2>
+            <label className="text-xs text-zinc-300 flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={useDefaultRules}
+                onChange={(e) => setUseDefaultRules(e.target.checked)}
+              />
+              Usar reglas default
+            </label>
+          </div>
+
+          <p className="mt-2 text-xs text-zinc-400">
+            Estas reglas aplican a caballos que no tengan reglas propias. Se usan rangos: min inclusive, max exclusivo.
+          </p>
+
+          {useDefaultRules ? (
+            <div className="mt-3 space-y-2">
+              {defaultRules.map((r) => (
+                <div key={r.tempId} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
+                  <input
+                    inputMode="decimal"
+                    value={r.min_precio}
+                    onChange={(e) => updateRule(setDefaultRules, r.tempId, { min_precio: e.target.value })}
+                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                    placeholder="Min"
+                  />
+                  <input
+                    inputMode="decimal"
+                    value={r.max_precio}
+                    onChange={(e) => updateRule(setDefaultRules, r.tempId, { max_precio: e.target.value })}
+                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                    placeholder="Max (opcional)"
+                  />
+                  <input
+                    inputMode="decimal"
+                    value={r.incremento}
+                    onChange={(e) => updateRule(setDefaultRules, r.tempId, { incremento: e.target.value })}
+                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                    placeholder="Incremento"
+                  />
+                  <button
+                    onClick={() => removeRule(setDefaultRules, r.tempId)}
+                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                  >
+                    Quitar
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={() => addRule(setDefaultRules)}
+                className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+              >
+                + Agregar rango
+              </button>
+            </div>
+          ) : null}
         </section>
 
         {/* Caballos */}
         <section className="mt-3 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">3) Caballos</h2>
+            <h2 className="text-base font-semibold">4) Caballos</h2>
             <button
               onClick={addHorse}
               className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs font-semibold"
             >
-              + Agregar
+              + Agregar caballo
             </button>
           </div>
 
@@ -430,7 +662,7 @@ export default function AdminCrearRematePage() {
 
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   <div>
-                    <label className="text-xs text-zinc-300">N°</label>
+                    <label className="text-xs text-zinc-300">No.</label>
                     <input
                       inputMode="numeric"
                       value={h.numero}
@@ -452,7 +684,7 @@ export default function AdminCrearRematePage() {
 
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-xs text-zinc-300">Jinete (opcional)</label>
+                    <label className="text-xs text-zinc-300">Jinete</label>
                     <input
                       value={h.jinete}
                       onChange={(e) => updateHorse(h.tempId, { jinete: e.target.value })}
@@ -460,20 +692,11 @@ export default function AdminCrearRematePage() {
                       placeholder="J1"
                     />
                   </div>
-                  <div>
-                    <label className="text-xs text-zinc-300">Entrenador (opcional)</label>
-                    <input
-                      value={h.entrenador}
-                      onChange={(e) => updateHorse(h.tempId, { entrenador: e.target.value })}
-                      className="mt-1 w-full rounded-xl bg-zinc-900/40 border border-zinc-800 px-3 py-2 text-sm"
-                      placeholder="E1"
-                    />
-                  </div>
                 </div>
 
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-xs text-zinc-300">Precio salida (opcional)</label>
+                    <label className="text-xs text-zinc-300">Precio salida</label>
                     <input
                       inputMode="decimal"
                       value={h.precio_salida}
@@ -492,12 +715,78 @@ export default function AdminCrearRematePage() {
                     />
                   </div>
                 </div>
+
+                <div className="mt-3 rounded-xl bg-zinc-950/40 border border-zinc-800 p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-zinc-300">Reglas propias</div>
+                    <label className="text-xs text-zinc-300 flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!!horseRulesEnabled[h.tempId]}
+                        onChange={(e) =>
+                          setHorseRulesEnabled((prev) => ({ ...prev, [h.tempId]: e.target.checked }))
+                        }
+                      />
+                      Activar
+                    </label>
+                  </div>
+
+                  {horseRulesEnabled[h.tempId] ? (
+                    <div className="mt-3 space-y-2">
+                      {(horseRulesByTempId[h.tempId] || []).map((r) => (
+                        <div key={r.tempId} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
+                          <input
+                            inputMode="decimal"
+                            value={r.min_precio}
+                            onChange={(e) => updateHorseRule(h.tempId, r.tempId, { min_precio: e.target.value })}
+                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                            placeholder="Min"
+                          />
+                          <input
+                            inputMode="decimal"
+                            value={r.max_precio}
+                            onChange={(e) => updateHorseRule(h.tempId, r.tempId, { max_precio: e.target.value })}
+                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                            placeholder="Max (opcional)"
+                          />
+                          <input
+                            inputMode="decimal"
+                            value={r.incremento}
+                            onChange={(e) => updateHorseRule(h.tempId, r.tempId, { incremento: e.target.value })}
+                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                            placeholder="Incremento"
+                          />
+                          <button
+                            onClick={() => removeHorseRule(h.tempId, r.tempId)}
+                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                          >
+                            Quitar
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => addHorseRule(h.tempId)}
+                        className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                      >
+                        + Agregar rango
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-xs text-zinc-500">Usara las reglas default.</div>
+                  )}
+                </div>
               </div>
             ))}
+            <button
+              onClick={addHorse}
+              className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs font-semibold"
+            >
+              + Agregar caballo
+            </button>
           </div>
 
           <div className="mt-3 text-xs text-zinc-500">
-            Regla rápida: con esto ya puedes crear remates para probar. Las reglas finas de incrementos por caballo las metemos en la siguiente pantalla.
+            Regla rapida: usa reglas default o activa reglas propias por caballo si necesitas mas control.
           </div>
         </section>
 

@@ -27,7 +27,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <div className="min-h-screen flex flex-col">
+          <div className="flex-1">{children}</div>
+          <footer className="py-4 text-center text-xs text-zinc-400">
+            Remate Catire Bello ©2026 Todos los derechos reservados. Desarrollado por Jercol Technologies. Powered by GPT Codex.
+          </footer>
+        </div>
       </body>
     </html>
   );

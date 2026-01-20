@@ -1,4 +1,4 @@
-// ADMIN/PAGE.TSX
+﻿// ADMIN/PAGE.TSX
 
 "use client"
 
@@ -23,24 +23,22 @@ export default function AdminHomePage() {
   const [pendingWithdraws, setPendingWithdraws] = useState<number>(0)
 
   async function ensureAdmin() {
-    // 1) Sesión
     const { data: auth, error: authErr } = await supabase.auth.getUser()
     if (authErr) throw new Error(authErr.message)
     if (!auth?.user) {
-      router.replace("/login")
+      router.replace("/admin/login")
       return null
     }
 
-    // 2) Perfil (es_admin)
     const { data: prof, error: profErr } = await supabase
       .from("profiles")
-      .select("id,es_admin")
+      .select("id,es_admin,es_super_admin")
       .eq("id", auth.user.id)
       .maybeSingle()
 
     if (profErr) throw new Error(profErr.message)
 
-    if (!prof?.es_admin) {
+    if (!prof?.es_admin && !prof?.es_super_admin) {
       router.replace("/dashboard")
       return null
     }
@@ -58,7 +56,6 @@ export default function AdminHomePage() {
       const adminId = await ensureAdmin()
       if (!adminId) return
 
-      // Conteos rápidos (pendientes)
       const dep = await supabase
         .from("deposit_requests")
         .select("id", { count: "exact", head: true })
@@ -94,7 +91,6 @@ export default function AdminHomePage() {
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-50 px-4 py-6">
       <div className="mx-auto w-full max-w-md">
-        {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold">Panel Admin</h1>
           <Link href="/dashboard" className="text-xs text-zinc-300 underline underline-offset-4">
@@ -102,14 +98,12 @@ export default function AdminHomePage() {
           </Link>
         </div>
 
-        {/* Error */}
         {error ? (
           <div className="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-200 ring-1 ring-red-500/20">
             {error}
           </div>
         ) : null}
 
-        {/* Cards */}
         <div className="mt-4 grid grid-cols-2 gap-2">
           <Link href="/admin/recargas" className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
             <div className="text-xs text-zinc-500">Recargas pendientes</div>
@@ -132,32 +126,41 @@ export default function AdminHomePage() {
           {refreshing ? "Actualizando..." : "Actualizar"}
         </button>
 
-        {/* Acciones */}
         <div className="mt-6 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <div className="text-sm font-semibold">Acciones</div>
 
           <div className="mt-3 flex flex-col gap-2">
             <Link href="/admin/crear-remate" className="rounded-xl bg-white text-zinc-950 px-3 py-2 text-sm font-semibold">
-              Crear remate rápido
+              Crear remate rapido
             </Link>
 
             <Link href="/admin/recargas" className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm">
               Gestionar recargas
             </Link>
+
             <Link href="/admin/retiros" className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm">
               Gestionar retiros
             </Link>
+
+            <Link href="/admin/remates" className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm">
+              Gestionar remates (cerrar / liquidar)
+            </Link>
+
+            <Link
+              href="/admin/contabilidad"
+              className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+            >
+              Contabilidad
+            </Link>
+
             <Link href="/remates" className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm">
               Ir a remates
             </Link>
           </div>
 
-          <div className="mt-3 text-xs text-zinc-500">
-            Tip: “Crear remate rápido” te evita abrir 20 queries en el SQL Editor 😄
-          </div>
-        </div>
+        <div className="mt-3 text-xs text-zinc-500">Gestiona y opera remates desde este panel.</div>
+      </div>
       </div>
     </main>
   )
 }
-

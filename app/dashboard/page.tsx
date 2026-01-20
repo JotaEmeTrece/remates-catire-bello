@@ -1,4 +1,4 @@
-// DASHBOARD/PAGE.TSX
+﻿// DASHBOARD/PAGE.TSX
 
 "use client"
 
@@ -6,6 +6,8 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
+import ClientBottomNav from "@/app/components/ClientBottomNav"
+import { CornerLogo } from "@/app/components/BrandLogo"
 
 type WalletRow = {
   id: string
@@ -54,7 +56,7 @@ function formatMoney(v: string | number | null | undefined) {
 }
 
 function formatDT(v: string | null | undefined) {
-  if (!v) return "—"
+  if (!v) return "-"
   const d = new Date(v)
   if (Number.isNaN(d.getTime())) return v
   return d.toLocaleString("es-VE")
@@ -93,6 +95,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState("")
+  const [hasSession, setHasSession] = useState(false)
+  const [userId, setUserId] = useState<string | null>(null)
+  const [displayName, setDisplayName] = useState("")
 
   const [wallet, setWallet] = useState<WalletRow | null>(null)
   const [history, setHistory] = useState<WalletMovementRow[]>([])
@@ -105,26 +110,51 @@ export default function DashboardPage() {
     else setLoading(true)
 
     setError("")
+    setUserId(null)
+    setDisplayName("")
+    setWallet(null)
+    setHistory([])
+    setLastDeposits([])
+    setLastWithdraws([])
 
-    // 1) Auth
     const {
       data: { user },
       error: authErr,
     } = await supabase.auth.getUser()
 
     if (authErr) {
-      setError(authErr.message)
+      if (authErr.message !== "Auth session missing!") {
+        setError(authErr.message)
+      }
+      setHasSession(false)
+      setUserId(null)
       setLoading(false)
       setRefreshing(false)
       return
     }
 
     if (!user) {
-      router.replace("/login")
+      setHasSession(false)
+      setUserId(null)
+      setLoading(false)
+      setRefreshing(false)
       return
     }
 
-    // 2) Wallet
+    setHasSession(true)
+    setUserId(user.id)
+
+    const { data: profile, error: profileErr } = await supabase
+      .from("profiles")
+      .select("username")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    if (!profileErr) {
+      const name = profile?.username ? String(profile.username) : user.email ?? ""
+      setDisplayName(name)
+    }
+
     const { data: w, error: wErr } = await supabase
       .from("wallets")
       .select("id,saldo_disponible,saldo_bloqueado")
@@ -146,7 +176,6 @@ export default function DashboardPage() {
     setWallet(walletRow)
 
     // 3) Historial (IMPORTANTÍSIMO)
-    // wallet_movements NO tiene user_id, tiene wallet_id
     if (walletRow?.id) {
       const { data: mv, error: mvErr } = await supabase
         .from("wallet_movements")
@@ -165,7 +194,7 @@ export default function DashboardPage() {
       setHistory([])
     }
 
-    // 4) Últimas solicitudes de recarga (para que el usuario vea estado)
+    // 4) Últimas solicitudes de recarga
     const { data: dr, error: drErr } = await supabase
       .from("deposit_requests")
       .select("id,monto,metodo,telefono_pago,referencia,fecha_pago,estado,created_at")
@@ -198,6 +227,8 @@ export default function DashboardPage() {
 
   async function logout() {
     await supabase.auth.signOut()
+    setHasSession(false)
+    setUserId(null)
     router.replace("/login")
   }
 
@@ -205,28 +236,63 @@ export default function DashboardPage() {
     return <div className="min-h-screen flex items-center justify-center text-zinc-50">Cargando dashboard...</div>
   }
 
+  if (!userId) {
+    return (
+      <main className="min-h-screen bg-zinc-950 text-zinc-50 px-4 py-6">
+        <div className="mx-auto w-full max-w-md">
+          <h1 className="text-xl font-bold">Mi Panel</h1>
+          <div className="mt-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 text-sm text-zinc-200">
+            Inicia sesión para ver tu saldo, recargar, retirar y pujar.
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Link href="/remates" className="rounded-xl bg-white text-zinc-950 font-semibold py-2 text-sm text-center">
+              Ver remates
+            </Link>
+            <Link
+              href="/login"
+              className="rounded-xl bg-zinc-900/60 border border-zinc-800 py-2 text-sm text-center text-zinc-200"
+            >
+              Iniciar sesión
+            </Link>
+          </div>
+          <div className="mt-2 text-center">
+            <Link href="/register" className="text-xs text-zinc-300 underline underline-offset-4">
+              Crear cuenta
+            </Link>
+          </div>
+        </div>
+      </main>
+    )
+  }
+
   const disponible = wallet ? n(wallet.saldo_disponible) : 0
   const bloqueado = wallet ? n(wallet.saldo_bloqueado) : 0
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-50 px-4 py-6">
-      <div className="mx-auto w-full max-w-md">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold">Mi Panel</h1>
-          <button onClick={logout} className="text-xs text-zinc-300 underline underline-offset-4">
-            Cerrar sesión
-          </button>
-        </div>
+    <>
+      <main className="min-h-screen bg-zinc-950 text-zinc-50 px-4 py-6 pb-24">
+        <div className="mx-auto w-full max-w-md">
+          <div className="mb-3">
+            <CornerLogo />
+          </div>
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold">Mi Panel</h1>
+            {userId ? (
+              <button onClick={logout} className="text-xs text-zinc-300 underline underline-offset-4">
+                Cerrar sesión
+              </button>
+            ) : (
+              <span />
+            )}
+          </div>
+          {displayName ? <div className="mt-1 text-xs text-zinc-400">Usuario: {displayName}</div> : null}
 
-        {/* Error */}
         {error ? (
           <div className="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-200 ring-1 ring-red-500/20">
             {error}
           </div>
         ) : null}
 
-        {/* Saldos */}
         <div className="mt-4 grid grid-cols-2 gap-2">
           <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-3">
             <div className="text-xs text-zinc-500">Disponible</div>
@@ -238,7 +304,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Acciones rápidas */}
         <div className="mt-3 grid grid-cols-3 gap-2">
           <Link
             href="/remates"
@@ -262,7 +327,6 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* Refresh */}
         <button
           onClick={() => void load(true)}
           disabled={refreshing}
@@ -271,19 +335,21 @@ export default function DashboardPage() {
           {refreshing ? "Actualizando..." : "Actualizar"}
         </button>
 
-        {/* Últimas solicitudes */}
         <div className="mt-6 space-y-3">
-          {/* Recargas */}
-          <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Recargas recientes</h2>
-              <Link href="/dashboard/recargar" className="text-xs text-zinc-300 underline underline-offset-4">
+          <details className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+            <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold">
+              <span>Recargas recientes</span>
+              <Link
+                href="/dashboard/recargar"
+                className="text-xs text-zinc-300 underline underline-offset-4"
+                onClick={(e) => e.stopPropagation()}
+              >
                 Ver
               </Link>
-            </div>
+            </summary>
 
             {lastDeposits.length === 0 ? (
-              <div className="mt-2 text-sm text-zinc-400">No tienes recargas recientes.</div>
+              <div className="mt-3 text-sm text-zinc-400">No tienes recargas recientes.</div>
             ) : (
               <div className="mt-3 space-y-2">
                 {lastDeposits.map((d) => (
@@ -292,10 +358,10 @@ export default function DashboardPage() {
                       <div>
                         <div className="text-sm font-semibold">{formatMoney(d.monto)} Bs</div>
                         <div className="mt-1 text-xs text-zinc-400">
-                          {d.metodo} · {d.referencia}
+                          {d.metodo} - {d.referencia}
                         </div>
                         <div className="mt-1 text-[11px] text-zinc-500">
-                          Pago: {d.fecha_pago} · {formatDT(d.created_at)}
+                          Pago: {d.fecha_pago} - {formatDT(d.created_at)}
                         </div>
                       </div>
                       <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusPill(d.estado)}`}>
@@ -306,19 +372,22 @@ export default function DashboardPage() {
                 ))}
               </div>
             )}
-          </div>
+          </details>
 
-          {/* Retiros */}
-          <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Retiros recientes</h2>
-              <Link href="/dashboard/retirar" className="text-xs text-zinc-300 underline underline-offset-4">
+          <details className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+            <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold">
+              <span>Retiros recientes</span>
+              <Link
+                href="/dashboard/retirar"
+                className="text-xs text-zinc-300 underline underline-offset-4"
+                onClick={(e) => e.stopPropagation()}
+              >
                 Ver
               </Link>
-            </div>
+            </summary>
 
             {lastWithdraws.length === 0 ? (
-              <div className="mt-2 text-sm text-zinc-400">No tienes retiros recientes.</div>
+              <div className="mt-3 text-sm text-zinc-400">No tienes retiros recientes.</div>
             ) : (
               <div className="mt-3 space-y-2">
                 {lastWithdraws.map((w) => (
@@ -327,7 +396,7 @@ export default function DashboardPage() {
                       <div>
                         <div className="text-sm font-semibold">{formatMoney(w.monto)} Bs</div>
                         <div className="mt-1 text-xs text-zinc-400">
-                          {w.metodo} · {w.telefono_destino}
+                          {w.metodo} - {w.telefono_destino}
                         </div>
                         <div className="mt-1 text-[11px] text-zinc-500">{formatDT(w.created_at)}</div>
                       </div>
@@ -340,14 +409,16 @@ export default function DashboardPage() {
                 ))}
               </div>
             )}
-          </div>
+          </details>
 
-          {/* Historial wallet */}
-          <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-            <h2 className="text-sm font-semibold">Historial</h2>
+          <details className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+            <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold">
+              <span>Historial</span>
+              <span className="text-xs text-zinc-400">Movimientos</span>
+            </summary>
 
             {history.length === 0 ? (
-              <div className="mt-2 text-sm text-zinc-400">Aún no hay movimientos.</div>
+              <div className="mt-3 text-sm text-zinc-400">Aún no hay movimientos.</div>
             ) : (
               <div className="mt-3 space-y-2">
                 {history.map((m) => (
@@ -369,10 +440,11 @@ export default function DashboardPage() {
                 ))}
               </div>
             )}
-          </div>
+          </details>
         </div>
-      </div>
-    </main>
+        </div>
+      </main>
+      {userId ? <ClientBottomNav /> : null}
+    </>
   )
 }
-

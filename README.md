@@ -20,6 +20,23 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Email Notifications (Gmail SMTP)
+
+To send an email notification whenever an admin approves/rejects a deposit (`/admin/recargas`), add this to `.env.local`:
+
+```bash
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USER=rematecbsa@gmail.com
+SMTP_PASS=GMAIL_APP_PASSWORD
+NOTIFY_EMAIL_TO=rematecbsa@gmail.com
+
+# Optional: used to generate an absolute URL in the email.
+APP_URL=http://localhost:3000
+```
+
+`SMTP_PASS` must be a Google "App Password" (requires 2-step verification enabled on that account).
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
