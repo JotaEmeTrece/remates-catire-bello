@@ -117,9 +117,7 @@ Puja manual:
 - Backend: Supabase (Postgres + Auth + RLS + RPC)
 - Infra: Vercel (frontend) y Supabase (base de datos)
 
-## Capturas sugeridas (para el PDF)
 
-Si vas a pasar esta guía a Word/PDF, estas capturas ayudan muchísimo a un admin no técnico. Puedes pegarlas debajo de cada punto.
 
 1) **Inicio / Remates**
    - Pantalla `/remates` con y sin remates activos.
