@@ -16,6 +16,8 @@ type RemateRow = {
   porcentaje_casa: string | number
   created_at: string | null
   closed_at: string | null
+  archived_at?: string | null
+  cancelled_at?: string | null
 }
 
 type RaceRow = {
@@ -125,7 +127,7 @@ export default function AdminRemateDetailPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [acting, setActing] = useState<null | { action: "cerrar" | "liquidar" }>(null)
+  const [acting, setActing] = useState<null | { action: "cerrar" | "liquidar" | "cancelar" | "archivar" }>(null)
 
   const [error, setError] = useState("")
   const [ok, setOk] = useState("")
@@ -195,9 +197,9 @@ export default function AdminRemateDetailPage() {
 
       const { data: r, error: rErr } = await supabase
         .from("remates")
-        .select("id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at")
-        .eq("id", remateId)
-        .single()
+      .select("id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at,archived_at,cancelled_at")
+      .eq("id", remateId)
+      .single()
 
       if (rErr) throw new Error(rErr.message)
       const rem = r as RemateRow
@@ -333,6 +335,8 @@ export default function AdminRemateDetailPage() {
 
   const canSave = useMemo(() => {
     if (!remateDraft || !raceDraft) return false
+    const estadoActual = String(remate?.estado || "").toLowerCase()
+    if (estadoActual === "cancelado" || remate?.archived_at) return false
     if (!raceDraft.nombre.trim()) return false
     if (!raceDraft.fecha) return false
     if (!remateDraft.nombre.trim()) return false
@@ -364,7 +368,7 @@ export default function AdminRemateDetailPage() {
     }
 
     return true
-  }, [remateDraft, raceDraft, horses, useDefaultRules, defaultRules, horseRulesEnabled, horseRulesByKey])
+  }, [remateDraft, raceDraft, horses, useDefaultRules, defaultRules, horseRulesEnabled, horseRulesByKey, remate])
 
   function addHorse() {
     const nextNum =
@@ -591,6 +595,68 @@ export default function AdminRemateDetailPage() {
     }
   }
 
+  async function cancelarRemate() {
+    if (!remate) return
+    setActing({ action: "cancelar" })
+    setError("")
+    setOk("")
+
+    try {
+      const confirmTxt = window.prompt("Escribe CANCELAR para confirmar la cancelación del remate")
+      if (confirmTxt !== "CANCELAR") return
+
+      const motivo = window.prompt("Motivo de cancelación (obligatorio)")
+      if (!motivo || !motivo.trim()) {
+        setError("Debes indicar un motivo para cancelar el remate.")
+        return
+      }
+
+      const { data, error: rpcErr } = await supabase.rpc("cancelar_remate", {
+        p_remate_id: remate.id,
+        p_motivo: motivo.trim(),
+      })
+      if (rpcErr) throw new Error(rpcErr.message)
+
+      setOk(typeof data === "string" ? data : "Remate cancelado.")
+      await loadAll(true)
+    } catch (e: any) {
+      setError(e?.message || "Error cancelando remate.")
+    } finally {
+      setActing(null)
+    }
+  }
+
+  async function archivarRemate() {
+    if (!remate) return
+    setActing({ action: "archivar" })
+    setError("")
+    setOk("")
+
+    try {
+      const motivo = window.prompt("Motivo de archivo (obligatorio)")
+      if (!motivo || !motivo.trim()) {
+        setError("Debes indicar un motivo para archivar el remate.")
+        return
+      }
+
+      const yes = window.confirm("Archivar este remate (quedará solo en histórico)")
+      if (!yes) return
+
+      const { data, error: rpcErr } = await supabase.rpc("archivar_remate", {
+        p_remate_id: remate.id,
+        p_motivo: motivo.trim(),
+      })
+      if (rpcErr) throw new Error(rpcErr.message)
+
+      setOk(typeof data === "string" ? data : "Remate archivado.")
+      await loadAll(true)
+    } catch (e: any) {
+      setError(e?.message || "Error archivando remate.")
+    } finally {
+      setActing(null)
+    }
+  }
+
   async function liquidarRemate() {
     if (!remate) return
     setWinnerNumber("")
@@ -731,10 +797,18 @@ export default function AdminRemateDetailPage() {
 
           <button
             onClick={() => void cerrarRemate()}
-            disabled={acting?.action === "cerrar"}
+            disabled={acting?.action === "cerrar" || String(remate?.estado || "").toLowerCase() !== "abierto"}
             className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-4 py-2 text-sm font-semibold disabled:opacity-60"
           >
             {acting?.action === "cerrar" ? "Cerrando..." : "Cerrar remate"}
+          </button>
+
+          <button
+            onClick={() => void cancelarRemate()}
+            disabled={acting?.action === "cancelar" || String(remate?.estado || "").toLowerCase() !== "abierto"}
+            className="rounded-xl bg-red-500/10 text-red-200 border border-red-500/30 px-4 py-2 text-sm font-semibold disabled:opacity-60"
+          >
+            {acting?.action === "cancelar" ? "Cancelando..." : "Cancelar remate"}
           </button>
 
           <button
@@ -748,6 +822,14 @@ export default function AdminRemateDetailPage() {
             }
           >
             {acting?.action === "liquidar" ? "Liquidando..." : "Liquidar remate"}
+          </button>
+
+          <button
+            onClick={() => void archivarRemate()}
+            disabled={acting?.action === "archivar" || String(remate?.estado || "").toLowerCase() === "abierto" || !!remate?.archived_at}
+            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-4 py-2 text-sm font-semibold disabled:opacity-60"
+          >
+            {acting?.action === "archivar" ? "Archivando..." : "Archivar"}
           </button>
         </div>
 

@@ -14,6 +14,7 @@ type RemateRow = {
   estado: string
   race_id: string
   created_at: string | null
+  archived_at?: string | null
 }
 
 type RaceRow = {
@@ -67,8 +68,10 @@ export default function RematesPage() {
 
       const { data: r, error: rErr } = await supabase
         .from("remates")
-        .select("id,nombre,estado,race_id,created_at")
+        .select("id,nombre,estado,race_id,created_at,archived_at")
+        .is("archived_at", null)
         .neq("estado", "liquidado")
+        .neq("estado", "cancelado")
         .in("estado", user ? ["abierto", "cerrado"] : ["abierto"])
         .order("created_at", { ascending: false })
         .limit(50)

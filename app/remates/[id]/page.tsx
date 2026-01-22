@@ -19,6 +19,7 @@ type RemateRow = {
   porcentaje_casa: string | number
   created_at: string | null
   closed_at: string | null
+  archived_at?: string | null
 }
 
 type RaceRow = {
@@ -169,7 +170,7 @@ export default function RemateDetallePage() {
 
     const { data: r, error: rErr } = await supabase
       .from("remates")
-      .select("id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at")
+      .select("id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at,archived_at")
       .eq("id", remateId)
       .single()
 
@@ -439,6 +440,24 @@ export default function RemateDetallePage() {
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-zinc-50">Cargando remate...</div>
+  }
+
+  const isCancelled = remate && String(remate.estado || "").toLowerCase() === "cancelado"
+  const isArchived = !!remate?.archived_at
+  if (remate && (isCancelled || isArchived)) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-950 text-zinc-50 px-4">
+        <div className="w-full max-w-md rounded-2xl bg-zinc-900/60 border border-zinc-800 p-5 text-center">
+          <h1 className="text-lg font-semibold">Remate no disponible</h1>
+          <p className="mt-2 text-sm text-zinc-300">
+            {isCancelled ? "Este remate fue cancelado." : "Este remate fue archivado."}
+          </p>
+          <Link href="/remates" className="mt-4 inline-block text-xs text-zinc-300 underline underline-offset-4">
+            Volver a remates
+          </Link>
+        </div>
+      </div>
+    )
   }
 
   if (!remate) {

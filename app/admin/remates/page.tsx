@@ -12,6 +12,8 @@ type RemateRow = {
   estado: "abierto" | "cerrado" | "liquidado" | string
   race_id: string
   created_at: string | null
+  archived_at?: string | null
+  cancelled_at?: string | null
 }
 
 type HorseRow = {
@@ -56,6 +58,8 @@ function pillEstado(estado: string) {
   if (e === "abierto") return "bg-emerald-500/10 text-emerald-200 ring-1 ring-emerald-500/20"
   if (e === "cerrado") return "bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/20"
   if (e === "liquidado") return "bg-sky-500/10 text-sky-200 ring-1 ring-sky-500/20"
+  if (e === "cancelado") return "bg-red-500/10 text-red-200 ring-1 ring-red-500/20"
+  if (e === "archivado") return "bg-zinc-500/10 text-zinc-200 ring-1 ring-zinc-500/20"
   return "bg-zinc-500/10 text-zinc-200 ring-1 ring-zinc-500/20"
 }
 
@@ -75,7 +79,7 @@ export default function AdminRematesPage() {
   const [horses, setHorses] = useState<HorseRow[]>([])
   const [bids, setBids] = useState<BidRow[]>([])
 
-  const [acting, setActing] = useState<null | { id: string; action: "cerrar" | "liquidar" }>(null)
+  const [acting, setActing] = useState<null | { id: string; action: "cerrar" | "cancelar" | "archivar" }>(null)
 
   async function ensureAdmin() {
     const { data: auth, error: authErr } = await supabase.auth.getUser()
@@ -113,7 +117,7 @@ export default function AdminRematesPage() {
 
       const { data, error: listErr } = await supabase
         .from("remates")
-        .select("id,nombre,estado,race_id,created_at")
+        .select("id,nombre,estado,race_id,created_at,archived_at,cancelled_at")
         .order("created_at", { ascending: false })
         .limit(200)
 
@@ -268,6 +272,73 @@ export default function AdminRematesPage() {
     }
   }
 
+  async function cancelarRemate(remateId: string) {
+    setActing({ id: remateId, action: "cancelar" })
+    setError("")
+    setOk("")
+
+    try {
+      const confirmTxt = window.prompt("Escribe CANCELAR para confirmar la cancelación del remate")
+      if (confirmTxt !== "CANCELAR") {
+        setActing(null)
+        return
+      }
+
+      const motivo = window.prompt("Motivo de cancelación (obligatorio)")
+      if (!motivo || !motivo.trim()) {
+        setError("Debes indicar un motivo para cancelar el remate.")
+        return
+      }
+
+      const { data, error: rpcErr } = await supabase.rpc("cancelar_remate", {
+        p_remate_id: remateId,
+        p_motivo: motivo.trim(),
+      })
+
+      if (rpcErr) throw new Error(rpcErr.message)
+
+      setOk(typeof data === "string" ? data : "Remate cancelado.")
+      await loadRemates(true)
+      if (openId === remateId) setOpenId(null)
+    } catch (e: any) {
+      setError(e?.message || "Error cancelando remate.")
+    } finally {
+      setActing(null)
+    }
+  }
+
+  async function archivarRemate(remateId: string) {
+    setActing({ id: remateId, action: "archivar" })
+    setError("")
+    setOk("")
+
+    try {
+      const motivo = window.prompt("Motivo de archivo (obligatorio)")
+      if (!motivo || !motivo.trim()) {
+        setError("Debes indicar un motivo para archivar el remate.")
+        return
+      }
+
+      const yes = window.confirm("Archivar este remate (quedará solo en histórico)")
+      if (!yes) return
+
+      const { data, error: rpcErr } = await supabase.rpc("archivar_remate", {
+        p_remate_id: remateId,
+        p_motivo: motivo.trim(),
+      })
+
+      if (rpcErr) throw new Error(rpcErr.message)
+
+      setOk(typeof data === "string" ? data : "Remate archivado.")
+      await loadRemates(true)
+      if (openId === remateId) setOpenId(null)
+    } catch (e: any) {
+      setError(e?.message || "Error archivando remate.")
+    } finally {
+      setActing(null)
+    }
+  }
+
 
   return (
     <main className="min-h-dvh bg-zinc-950 text-zinc-50">
@@ -298,8 +369,15 @@ export default function AdminRematesPage() {
         ) : null}
 
         {(() => {
-          const activeRemates = remates.filter((r) => String(r.estado || "").toLowerCase() !== "liquidado")
-          const historicoRemates = remates.filter((r) => String(r.estado || "").toLowerCase() === "liquidado")
+          const activeRemates = remates.filter((r) => {
+            const estado = String(r.estado || "").toLowerCase()
+            const archived = !!r.archived_at
+            return !archived && (estado === "abierto" || estado === "cerrado")
+          })
+          const historicoRemates = remates.filter((r) => {
+            const estado = String(r.estado || "").toLowerCase()
+            return !!r.archived_at || estado === "liquidado" || estado === "cancelado"
+          })
 
           return (
             <>
@@ -316,7 +394,12 @@ export default function AdminRematesPage() {
 
               const estado = String(r.estado || "").toLowerCase()
               const canCerrar = estado === "abierto"
+              const canCancelar = estado === "abierto"
+              const canArchivar = estado !== "abierto" && !r.archived_at
               const isActingCerrar = acting?.id === r.id && acting.action === "cerrar"
+              const isActingCancelar = acting?.id === r.id && acting.action === "cancelar"
+              const isActingArchivar = acting?.id === r.id && acting.action === "archivar"
+              const estadoLabel = r.archived_at ? "archivado" : r.estado
 
               return (
                 <div key={r.id} className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
@@ -327,7 +410,7 @@ export default function AdminRematesPage() {
                         ID: {r.id.slice(0, 8)}... - Race: {r.race_id.slice(0, 8)}... - {formatDT(r.created_at)}
                       </div>
                     </div>
-                    <div className={`rounded-full px-3 py-1 text-xs font-semibold ${pillEstado(r.estado)}`}>{r.estado}</div>
+                    <div className={`rounded-full px-3 py-1 text-xs font-semibold ${pillEstado(estadoLabel)}`}>{estadoLabel}</div>
                   </div>
 
                   <div className="mt-4 flex flex-col md:flex-row gap-2">
@@ -352,6 +435,24 @@ export default function AdminRematesPage() {
                       title={!canCerrar ? "Solo puedes cerrar remates abiertos" : ""}
                     >
                       {isActingCerrar ? "Cerrando..." : "Cerrar remate"}
+                    </button>
+
+                    <button
+                      disabled={!canCancelar || isActingCancelar}
+                      onClick={() => void cancelarRemate(r.id)}
+                      className="rounded-xl bg-red-500/10 text-red-200 border border-red-500/30 px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                      title={!canCancelar ? "Solo puedes cancelar remates abiertos" : ""}
+                    >
+                      {isActingCancelar ? "Cancelando..." : "Cancelar remate"}
+                    </button>
+
+                    <button
+                      disabled={!canArchivar || isActingArchivar}
+                      onClick={() => void archivarRemate(r.id)}
+                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                      title={!canArchivar ? "Solo puedes archivar remates cerrados o liquidados" : ""}
+                    >
+                      {isActingArchivar ? "Archivando..." : "Archivar"}
                     </button>
                   </div>
 
@@ -427,10 +528,13 @@ export default function AdminRematesPage() {
 
               {historicoRemates.length > 0 ? (
                 <div className="mt-10">
-                  <h2 className="text-base font-semibold">Historico</h2>
+                  <h2 className="text-base font-semibold">Histórico</h2>
                   <div className="mt-3 space-y-3">
                     {historicoRemates.map((r) => {
                       const isOpen = openId === r.id
+                      const estadoLabel = r.archived_at ? "archivado" : r.estado
+                      const canArchivar = String(r.estado || "").toLowerCase() !== "abierto" && !r.archived_at
+                      const isActingArchivar = acting?.id === r.id && acting.action === "archivar"
                       return (
                         <div key={r.id} className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
                           <div className="flex items-start justify-between gap-3">
@@ -440,8 +544,8 @@ export default function AdminRematesPage() {
                                 ID: {r.id.slice(0, 8)}... - Race: {r.race_id.slice(0, 8)}... - {formatDT(r.created_at)}
                               </div>
                             </div>
-                            <div className={`rounded-full px-3 py-1 text-xs font-semibold ${pillEstado(r.estado)}`}>
-                              {r.estado}
+                            <div className={`rounded-full px-3 py-1 text-xs font-semibold ${pillEstado(estadoLabel)}`}>
+                              {estadoLabel}
                             </div>
                           </div>
 
@@ -458,6 +562,15 @@ export default function AdminRematesPage() {
                             >
                               Abrir panel
                             </Link>
+
+                            <button
+                              disabled={!canArchivar || isActingArchivar}
+                              onClick={() => void archivarRemate(r.id)}
+                              className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                              title={!canArchivar ? "Solo puedes archivar remates cerrados o liquidados" : ""}
+                            >
+                              {isActingArchivar ? "Archivando..." : "Archivar"}
+                            </button>
                           </div>
 
                           {isOpen ? (
