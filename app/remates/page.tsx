@@ -15,6 +15,9 @@ type RemateRow = {
   race_id: string
   created_at: string | null
   archived_at?: string | null
+  opens_at?: string | null
+  closes_at?: string | null
+  tipo?: string | null
 }
 
 type RaceRow = {
@@ -68,11 +71,11 @@ export default function RematesPage() {
 
       const { data: r, error: rErr } = await supabase
         .from("remates")
-        .select("id,nombre,estado,race_id,created_at,archived_at")
+        .select("id,nombre,estado,race_id,created_at,archived_at,opens_at,closes_at,tipo")
         .is("archived_at", null)
         .neq("estado", "liquidado")
         .neq("estado", "cancelado")
-        .in("estado", user ? ["abierto", "cerrado"] : ["abierto"])
+        .eq("estado", "abierto")
         .order("created_at", { ascending: false })
         .limit(50)
 
@@ -82,8 +85,16 @@ export default function RematesPage() {
         return
       }
 
+      const now = Date.now()
       const rems = (r ?? []) as RemateRow[]
-      setRemates(rems)
+      const visible = rems.filter((x) => {
+        const o = x.opens_at ? new Date(x.opens_at).getTime() : null
+        const c = x.closes_at ? new Date(x.closes_at).getTime() : null
+        if (o && now < o) return false
+        if (c && now >= c) return false
+        return true
+      })
+      setRemates(visible)
 
       const raceIds = Array.from(new Set(rems.map((x) => x.race_id).filter(Boolean)))
       if (raceIds.length > 0) {
@@ -155,7 +166,20 @@ export default function RematesPage() {
           </div>
         ) : (
           <div className="mt-5 space-y-3">
-            {remates.map((r) => {
+            {[
+              { key: "vivo", label: "En vivo" },
+              { key: "adelantado", label: "Adelantados" },
+            ].map((section) => {
+              const list =
+                section.key === "adelantado"
+                  ? remates.filter((r) => r.tipo === "adelantado")
+                  : remates.filter((r) => r.tipo !== "adelantado")
+              if (list.length === 0) return null
+              return (
+                <div key={section.key}>
+                  <div className="mb-2 text-xs uppercase tracking-wide text-zinc-400">{section.label}</div>
+                  <div className="space-y-3">
+                    {list.map((r) => {
               const race = racesById[r.race_id]
               return (
                 <Link
@@ -187,6 +211,10 @@ export default function RematesPage() {
 
                   <div className="mt-3 text-xs text-zinc-500">Toca para entrar a la tabla del remate.</div>
                 </Link>
+              )
+                    })}
+                  </div>
+                </div>
               )
             })}
           </div>

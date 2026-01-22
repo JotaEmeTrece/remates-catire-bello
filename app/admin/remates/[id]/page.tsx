@@ -6,6 +6,45 @@ import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
 
+const CARACAS_TZ = "America/Caracas"
+
+function formatDateInTz(d: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d)
+}
+
+function formatTimeInTz(d: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(d)
+}
+
+function toCaracasDate(ts?: string | null) {
+  if (!ts) return ""
+  return formatDateInTz(new Date(ts), CARACAS_TZ)
+}
+
+function toCaracasTime(ts?: string | null) {
+  if (!ts) return ""
+  return formatTimeInTz(new Date(ts), CARACAS_TZ)
+}
+
+function buildCaracasTs(dateStr: string, timeStr: string) {
+  if (!dateStr) return null
+  let t = (timeStr || "").trim()
+  if (!t) t = "00:00:00"
+  if (t.length === 5) t = `${t}:00`
+  return `${dateStr}T${t}-04:00`
+}
+
 type RemateRow = {
   id: string
   race_id: string
@@ -18,6 +57,9 @@ type RemateRow = {
   closed_at: string | null
   archived_at?: string | null
   cancelled_at?: string | null
+  opens_at?: string | null
+  closes_at?: string | null
+  tipo?: string | null
 }
 
 type RaceRow = {
@@ -69,6 +111,11 @@ type RemateDraft = {
   incremento_minimo: string
   apuesta_minima: string
   porcentaje_casa: string
+  tipo: string
+  opens_date: string
+  opens_time: string
+  closes_date: string
+  closes_time: string
 }
 
 type RaceDraft = {
@@ -136,6 +183,7 @@ export default function AdminRemateDetailPage() {
   const [liquidarError, setLiquidarError] = useState("")
 
   const [remate, setRemate] = useState<RemateRow | null>(null)
+  const [closeTouched, setCloseTouched] = useState(false)
   const [race, setRace] = useState<RaceRow | null>(null)
   const [bids, setBids] = useState<BidRow[]>([])
 
@@ -197,9 +245,11 @@ export default function AdminRemateDetailPage() {
 
       const { data: r, error: rErr } = await supabase
         .from("remates")
-      .select("id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at,archived_at,cancelled_at")
-      .eq("id", remateId)
-      .single()
+        .select(
+          "id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at,archived_at,cancelled_at,opens_at,closes_at,tipo"
+        )
+        .eq("id", remateId)
+        .single()
 
       if (rErr) throw new Error(rErr.message)
       const rem = r as RemateRow
@@ -210,6 +260,11 @@ export default function AdminRemateDetailPage() {
         incremento_minimo: String(rem.incremento_minimo ?? ""),
         apuesta_minima: String(rem.apuesta_minima ?? ""),
         porcentaje_casa: String(rem.porcentaje_casa ?? ""),
+        tipo: rem.tipo ?? "vivo",
+        opens_date: toCaracasDate(rem.opens_at) || toCaracasDate(rem.created_at),
+        opens_time: toCaracasTime(rem.opens_at) || "07:00:00",
+        closes_date: toCaracasDate(rem.closes_at) || toCaracasDate(rem.closed_at) || toCaracasDate(rem.created_at),
+        closes_time: toCaracasTime(rem.closes_at) || "19:00:00",
       })
 
       const { data: ra, error: raErr } = await supabase
@@ -349,6 +404,13 @@ export default function AdminRemateDetailPage() {
     if (!(min > 0)) return false
     if (!(casa >= 0 && casa <= 100)) return false
 
+    if (!remateDraft.opens_date || !remateDraft.opens_time) return false
+    if (!remateDraft.closes_date || !remateDraft.closes_time) return false
+    const o = buildCaracasTs(remateDraft.opens_date, remateDraft.opens_time)
+    const c = buildCaracasTs(remateDraft.closes_date, remateDraft.closes_time)
+    if (!o || !c) return false
+    if (new Date(o).getTime() >= new Date(c).getTime()) return false
+
     if (horses.length === 0) return false
     for (const h of horses) {
       if (!h.numero.trim()) return false
@@ -485,6 +547,9 @@ export default function AdminRemateDetailPage() {
         incremento_minimo: n(remateDraft.incremento_minimo),
         apuesta_minima: n(remateDraft.apuesta_minima),
         porcentaje_casa: n(remateDraft.porcentaje_casa),
+        tipo: remateDraft.tipo || remate.tipo || "vivo",
+        opens_at: buildCaracasTs(remateDraft.opens_date, remateDraft.opens_time),
+        closes_at: buildCaracasTs(remateDraft.closes_date, remateDraft.closes_time),
       }
       const { error: remErr } = await supabase.from("remates").update(remateUpdate).eq("id", remate.id)
       if (remErr) throw new Error(remErr.message)
@@ -1020,6 +1085,67 @@ export default function AdminRemateDetailPage() {
                 onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, porcentaje_casa: e.target.value } : prev))}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
               />
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-400">Tipo</label>
+              <select
+                value={remateDraft?.tipo ?? "vivo"}
+                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, tipo: e.target.value } : prev))}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+              >
+                <option value="vivo">En vivo</option>
+                <option value="adelantado">Adelantado</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-400">Apertura (fecha)</label>
+              <input
+                type="date"
+                value={remateDraft?.opens_date ?? ""}
+                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_date: e.target.value } : prev))}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-400">Apertura (hora)</label>
+              <input
+                value={remateDraft?.opens_time ?? ""}
+                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_time: e.target.value } : prev))}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                placeholder="07:00:00"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-400">Cierre (fecha)</label>
+              <input
+                type="date"
+                value={remateDraft?.closes_date ?? ""}
+                onChange={(e) => {
+                  setCloseTouched(true)
+                  setRemateDraft((prev) => (prev ? { ...prev, closes_date: e.target.value } : prev))
+                }}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-400">Cierre (hora)</label>
+              <input
+                value={remateDraft?.closes_time ?? ""}
+                onChange={(e) => {
+                  setCloseTouched(true)
+                  setRemateDraft((prev) => (prev ? { ...prev, closes_time: e.target.value } : prev))
+                }}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                placeholder="19:00:00"
+              />
+            </div>
+            <div className="md:col-span-2 text-[11px] text-zinc-500">
+              Horario Venezuela (America/Caracas).
             </div>
           </div>
         </section>

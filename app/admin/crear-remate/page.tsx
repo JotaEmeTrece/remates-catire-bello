@@ -24,6 +24,43 @@ type PriceRuleDraft = {
   incremento: string
 }
 
+const CARACAS_TZ = "America/Caracas"
+
+function formatDateInTz(d: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d)
+}
+
+function formatTimeInTz(d: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(d)
+}
+
+function caracasNowParts() {
+  const d = new Date()
+  return {
+    date: formatDateInTz(d, CARACAS_TZ),
+    time: formatTimeInTz(d, CARACAS_TZ),
+  }
+}
+
+function buildCaracasTs(dateStr: string, timeStr: string) {
+  if (!dateStr) return null
+  let t = (timeStr || "").trim()
+  if (!t) t = "00:00:00"
+  if (t.length === 5) t = `${t}:00`
+  return `${dateStr}T${t}-04:00`
+}
+
 function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16)
 }
@@ -72,6 +109,23 @@ export default function AdminCrearRematePage() {
   const [incrementoMinimo, setIncrementoMinimo] = useState("20")
   const [apuestaMinima, setApuestaMinima] = useState("60")
   const [porcentajeCasa, setPorcentajeCasa] = useState("25")
+  const nowCaracas = caracasNowParts()
+  const [remateTipo, setRemateTipo] = useState<"vivo" | "adelantado">("vivo")
+  const [opensDate, setOpensDate] = useState(nowCaracas.date)
+  const [opensTime, setOpensTime] = useState(nowCaracas.time)
+  const [closesDate, setClosesDate] = useState(raceFecha)
+  const [closesTime, setClosesTime] = useState(raceHora || nowCaracas.time)
+  const [closeTouched, setCloseTouched] = useState(false)
+
+  useEffect(() => {
+    if (!closeTouched) setClosesDate(raceFecha)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [raceFecha])
+
+  useEffect(() => {
+    if (!closeTouched && raceHora.trim()) setClosesTime(raceHora)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [raceHora])
 
   // =========================
   // Caballos (horses) - lista dinámica
@@ -160,6 +214,11 @@ export default function AdminCrearRematePage() {
     if (!(min > 0)) return false
     if (!(casa >= 0 && casa <= 100)) return false
 
+    const o = buildCaracasTs(opensDate, opensTime)
+    const c = buildCaracasTs(closesDate, closesTime)
+    if (!o || !c) return false
+    if (new Date(o).getTime() >= new Date(c).getTime()) return false
+
     if (horses.length === 0) return false
     for (const h of horses) {
       if (!h.numero.trim()) return false
@@ -198,6 +257,10 @@ export default function AdminCrearRematePage() {
     incrementoMinimo,
     apuestaMinima,
     porcentajeCasa,
+    opensDate,
+    opensTime,
+    closesDate,
+    closesTime,
     horses,
     useDefaultRules,
     defaultRules,
@@ -328,6 +391,9 @@ export default function AdminCrearRematePage() {
         incremento_minimo: n(incrementoMinimo),
         apuesta_minima: n(apuestaMinima),
         porcentaje_casa: n(porcentajeCasa),
+        tipo: remateTipo,
+        opens_at: buildCaracasTs(opensDate, opensTime),
+        closes_at: buildCaracasTs(closesDate, closesTime),
       }
 
       const { data: remateData, error: remErr } = await supabase
@@ -570,6 +636,69 @@ export default function AdminCrearRematePage() {
 
             <div className="text-xs text-zinc-500">
               Este "crear rapido" deja el remate <span className="text-zinc-300">abierto</span> para que entres a probar de una.
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-sm text-zinc-200">Tipo</label>
+                <select
+                  value={remateTipo}
+                  onChange={(e) => setRemateTipo(e.target.value as "vivo" | "adelantado")}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                >
+                  <option value="vivo">En vivo</option>
+                  <option value="adelantado">Adelantado</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-zinc-200">Apertura (fecha)</label>
+                <input
+                  type="date"
+                  value={opensDate}
+                  onChange={(e) => setOpensDate(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-sm text-zinc-200">Apertura (hora)</label>
+                <input
+                  value={opensTime}
+                  onChange={(e) => setOpensTime(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                  placeholder="07:00:00"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-zinc-200">Cierre (fecha)</label>
+                <input
+                  type="date"
+                  value={closesDate}
+                  onChange={(e) => {
+                    setCloseTouched(true)
+                    setClosesDate(e.target.value)
+                  }}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-sm text-zinc-200">Cierre (hora)</label>
+              <input
+                value={closesTime}
+                onChange={(e) => {
+                  setCloseTouched(true)
+                  setClosesTime(e.target.value)
+                }}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                placeholder="19:00:00"
+              />
+              <p className="mt-1 text-xs text-zinc-400">
+                Horario Venezuela (America/Caracas).
+              </p>
             </div>
           </div>
         </section>
