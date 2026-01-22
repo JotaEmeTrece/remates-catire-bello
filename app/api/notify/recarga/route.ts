@@ -111,11 +111,12 @@ async function smtpSendMail(opts: {
       `MIME-Version: 1.0`,
       `Content-Type: text/plain; charset="utf-8"`,
       `Content-Transfer-Encoding: 8bit`,
-      ``,
     ].join("\r\n")
 
-    const body = String(opts.text || "").replace(/\r?\n/g, "\r\n")
-    const data = `${headers}${body}\r\n.\r\n`
+    const body = String(opts.text || "")
+      .replace(/\r?\n/g, "\r\n")
+      .replace(/^\./gm, "..")
+    const data = `${headers}\r\n\r\n${body}\r\n.\r\n`
 
     socket.write(data)
     await expect(250)
@@ -267,4 +268,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: e?.message || "Unknown error" }, { status: 500 })
   }
 }
-
