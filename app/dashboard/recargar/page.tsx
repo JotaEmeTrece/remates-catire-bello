@@ -184,7 +184,7 @@ export default function RecargarPage() {
             <div className="font-semibold">Transferencia bancaria</div>
             <div className="text-gray-300">Banco: Banesco</div>
             <div className="text-gray-300">Cuenta: Corriente</div>
-            <div className="text-gray-300">N° de cuenta: 0124-0789-43-7891019197</div>
+            <div className="text-gray-300">N° de cuenta: 0134-0789-43-7891019197</div>
             <div className="text-gray-300">Cédula: 17454950</div>
           </div>
         </div>
