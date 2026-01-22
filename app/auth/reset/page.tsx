@@ -24,12 +24,45 @@ export default function ResetPasswordPage() {
   useEffect(() => {
     const run = async () => {
       try {
+        if (typeof window === "undefined") return
+
+        const qs = new URLSearchParams(window.location.search)
+
+        const code = qs.get("code")
+        if (code) {
+          const { error: exErr } = await supabase.auth.exchangeCodeForSession(code)
+          if (exErr) {
+            setError(exErr.message)
+            setChecking(false)
+            return
+          }
+
+          setReady(true)
+          setChecking(false)
+          return
+        }
+
+        const tokenHash = qs.get("token_hash")
+        const type = qs.get("type")
+        if (tokenHash && type === "recovery") {
+          const { error: verifyErr } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: "recovery" })
+          if (verifyErr) {
+            setError(verifyErr.message)
+            setChecking(false)
+            return
+          }
+
+          setReady(true)
+          setChecking(false)
+          return
+        }
+
         const params = getHashParams()
         const accessToken = params.get("access_token") || ""
         const refreshToken = params.get("refresh_token") || ""
 
         if (!accessToken || !refreshToken) {
-          setError("Link invalido o expirado.")
+          setError("Link inválido o expirado.")
           setChecking(false)
           return
         }
@@ -111,7 +144,7 @@ export default function ResetPasswordPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-white/10"
-                placeholder="Minimo 6 caracteres"
+                placeholder="Mínimo 6 caracteres"
               />
             </div>
             <div>
