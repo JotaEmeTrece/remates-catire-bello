@@ -168,7 +168,26 @@ export default function RecargarPage() {
             </Link>
         </div>
 
-        <p className="mt-2 text-sm text-gray-300">Registra tu pago y el admin lo aprueba manualmente.</p>
+        <p className="mt-2 text-sm text-gray-300">
+          Para recargar saldo, primero realiza el pago y luego notifícalo llenando el formulario. Un admin aprobará la
+          recarga si todo está correcto.
+        </p>
+
+        <div className="mt-4 rounded-2xl bg-gray-900/60 p-4 ring-1 ring-white/10 text-sm text-gray-200 space-y-3">
+          <div>
+            <div className="font-semibold">Pago Móvil</div>
+            <div className="text-gray-300">Banco: Banesco</div>
+            <div className="text-gray-300">Teléfono: 04143403972</div>
+            <div className="text-gray-300">Cédula: 17454950</div>
+          </div>
+          <div>
+            <div className="font-semibold">Transferencia bancaria</div>
+            <div className="text-gray-300">Banco: Banesco</div>
+            <div className="text-gray-300">Cuenta: Corriente</div>
+            <div className="text-gray-300">N° de cuenta: 0124-0789-43-7891019197</div>
+            <div className="text-gray-300">Cédula: 17454950</div>
+          </div>
+        </div>
 
         <form onSubmit={onSubmit} className="mt-5 space-y-3 rounded-2xl bg-gray-900/60 p-4 ring-1 ring-white/10">
           <div>
