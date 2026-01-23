@@ -96,7 +96,12 @@ export default function LoginPage() {
           <HeroLogo />
         </div>
         <h1 className="text-2xl font-bold">Iniciar sesión</h1>
-        <p className="mt-2 text-sm text-zinc-300">Usa un correo real y que esté activo.</p>
+        <div className="mt-2 flex items-center gap-3 text-sm text-zinc-300">
+          <span>Usa un correo real y que esté activo.</span>
+          <Link href="/reglas" className="text-xs underline underline-offset-4">
+            Ver reglas
+          </Link>
+        </div>
 
         <form onSubmit={handleLogin} className="mt-6 space-y-3 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <div>

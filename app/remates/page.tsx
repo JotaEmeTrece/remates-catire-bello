@@ -131,15 +131,20 @@ export default function RematesPage() {
           </div>
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold">Remates</h1>
-          {authReady && hasSession ? (
-            <Link href={isAdmin ? "/admin" : "/dashboard"} className="text-xs text-zinc-300 underline underline-offset-4">
-              Ir al panel
+          <div className="flex items-center gap-3 text-xs text-zinc-300">
+            <Link href="/reglas" className="underline underline-offset-4">
+              Reglas
             </Link>
-          ) : (
-            <Link href="/login" className="text-xs text-zinc-300 underline underline-offset-4">
-              Iniciar sesión
-            </Link>
-          )}
+            {authReady && hasSession ? (
+              <Link href={isAdmin ? "/admin" : "/dashboard"} className="underline underline-offset-4">
+                Ir al panel
+              </Link>
+            ) : (
+              <Link href="/login" className="underline underline-offset-4">
+                Iniciar sesión
+              </Link>
+            )}
+          </div>
         </div>
 
         {!hasSession ? (

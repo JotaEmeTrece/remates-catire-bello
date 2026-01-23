@@ -90,9 +90,14 @@ export default function RegisterPage() {
         <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-5">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold">Crear cuenta</h1>
-          <Link href="/login" className="text-xs text-zinc-300 underline underline-offset-4">
-            Volver
-          </Link>
+          <div className="flex items-center gap-3 text-xs text-zinc-300">
+            <Link href="/reglas" className="underline underline-offset-4">
+              Reglas
+            </Link>
+            <Link href="/login" className="underline underline-offset-4">
+              Volver
+            </Link>
+          </div>
         </div>
 
         <form onSubmit={handleRegister} className="mt-5 space-y-3">
