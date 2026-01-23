@@ -663,7 +663,7 @@ export default function RemateDetallePage() {
                                   disabled={disabled}
                                   onChange={(e) => setManualByHorse((prev) => ({ ...prev, [h.id]: e.target.value }))}
                                   placeholder="Monto manual"
-                                  className="flex-1 rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-white/10 disabled:opacity-60"
+                                  className="w-32 rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-white/10 disabled:opacity-60"
                                 />
                                 <button
                                   disabled={disabled}
