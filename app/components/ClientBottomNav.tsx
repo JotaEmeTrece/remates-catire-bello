@@ -28,6 +28,10 @@ const items: NavItem[] = [
     href: "/dashboard/retirar",
     label: "Retirar",
   },
+  {
+    href: "/contactanos",
+    label: "Contactanos",
+  },
 ]
 
 export default function ClientBottomNav() {
