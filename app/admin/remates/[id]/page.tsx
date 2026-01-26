@@ -27,14 +27,73 @@ function formatTimeInTz(d: Date, timeZone: string) {
   }).format(d)
 }
 
-function toCaracasDate(ts?: string | null) {
-  if (!ts) return ""
-  return formatDateInTz(new Date(ts), CARACAS_TZ)
+function weekdayInTz(d: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("es-VE", { timeZone, weekday: "long" }).format(d)
 }
 
-function toCaracasTime(ts?: string | null) {
+function splitIsoDate(dateIso: string) {
+  if (!dateIso) return { dd: "", mm: "", yy: "" }
+  const parts = dateIso.split("-")
+  if (parts.length !== 3) return { dd: "", mm: "", yy: "" }
+  return { dd: parts[2], mm: parts[1], yy: parts[0].slice(-2) }
+}
+
+function parseDateParts(ddRaw: string, mmRaw: string, yyRaw: string) {
+  const dd = ddRaw.trim().padStart(2, "0")
+  const mm = mmRaw.trim().padStart(2, "0")
+  const yy = yyRaw.trim().padStart(2, "0")
+  const d = Number(dd)
+  const m = Number(mm)
+  const y = Number(yy)
+  if (!Number.isFinite(d) || !Number.isFinite(m) || !Number.isFinite(y)) return ""
+  if (d < 1 || d > 31) return ""
+  if (m < 1 || m > 12) return ""
+  const yyyy = `20${yy}`
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function formatTime12hFrom24(time24: string) {
+  if (!time24) return ""
+  const parts = time24.split(":")
+  if (parts.length < 2) return ""
+  const h24 = Number(parts[0])
+  const m = parts[1]
+  if (!Number.isFinite(h24)) return ""
+  const isPm = h24 >= 12
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+  return `${h12}:${m} ${isPm ? "pm" : "am"}`
+}
+
+function parseTime12hTo24(raw: string) {
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/)
+  if (!m) return ""
+  let h = Number(m[1])
+  const mins = m[2] ?? "00"
+  const ap = m[3]
+  if (!Number.isFinite(h) || h < 1 || h > 12) return ""
+  const mm = Number(mins)
+  if (!Number.isFinite(mm) || mm < 0 || mm > 59) return ""
+  if (ap === "pm" && h !== 12) h += 12
+  if (ap === "am" && h === 12) h = 0
+  const hh = String(h).padStart(2, "0")
+  const min = String(mm).padStart(2, "0")
+  return `${hh}:${min}:00`
+}
+
+function toCaracasDateParts(ts?: string | null) {
+  if (!ts) return { dd: "", mm: "", yy: "" }
+  const iso = formatDateInTz(new Date(ts), CARACAS_TZ)
+  return splitIsoDate(iso)
+}
+
+function toCaracasTime12(ts?: string | null) {
   if (!ts) return ""
-  return formatTimeInTz(new Date(ts), CARACAS_TZ)
+  const time24 = formatTimeInTz(new Date(ts), CARACAS_TZ)
+  return formatTime12hFrom24(time24)
 }
 
 function buildCaracasTs(dateStr: string, timeStr: string) {
@@ -67,6 +126,9 @@ type RaceRow = {
   nombre: string
   hipodromo: string | null
   numero_carrera: number | null
+  numero_carrera_text?: string | null
+  dia?: string | null
+  distancia_m?: string | number | null
   fecha: string
   hora_programada: string | null
   estado: string
@@ -80,6 +142,7 @@ type HorseRow = {
   jinete: string | null
   comentarios: string | null
   precio_salida: string | number
+  retirado?: boolean | null
 }
 
 type PriceRuleRow = {
@@ -106,23 +169,30 @@ type BidRow = {
 }
 
 type RemateDraft = {
-  nombre: string
   estado: string
   incremento_minimo: string
   apuesta_minima: string
   porcentaje_casa: string
   tipo: string
-  opens_date: string
+  opens_dd: string
+  opens_mm: string
+  opens_aa: string
   opens_time: string
-  closes_date: string
+  closes_dd: string
+  closes_mm: string
+  closes_aa: string
   closes_time: string
 }
 
 type RaceDraft = {
-  nombre: string
+  descripcion: string
   hipodromo: string
-  numero_carrera: string
-  fecha: string
+  numero_carrera_text: string
+  dia: string
+  distancia_m: string
+  fecha_dd: string
+  fecha_mm: string
+  fecha_aa: string
   hora_programada: string
   estado: string
 }
@@ -135,6 +205,7 @@ type HorseDraft = {
   jinete: string
   comentarios: string
   precio_salida: string
+  retirado?: boolean
 }
 
 type PriceRuleDraft = {
@@ -159,6 +230,13 @@ function formatDT(v: string | null | undefined) {
   const d = new Date(v)
   if (Number.isNaN(d.getTime())) return v
   return d.toLocaleString("es-VE")
+}
+
+function formatDateShort(iso: string | null | undefined) {
+  if (!iso) return ""
+  const parts = iso.split("-")
+  if (parts.length !== 3) return iso
+  return `${parts[2]}/${parts[1]}/${parts[0].slice(-2)}`
 }
 
 function uid() {
@@ -254,40 +332,54 @@ export default function AdminRemateDetailPage() {
       if (rErr) throw new Error(rErr.message)
       const rem = r as RemateRow
       setRemate(rem)
+      const openTs = rem.opens_at || rem.created_at
+      const closeTs = rem.closes_at || rem.closed_at || rem.created_at
+      const openParts = toCaracasDateParts(openTs)
+      const closeParts = toCaracasDateParts(closeTs)
       setRemateDraft({
-        nombre: rem.nombre ?? "",
         estado: rem.estado ?? "abierto",
         incremento_minimo: String(rem.incremento_minimo ?? ""),
         apuesta_minima: String(rem.apuesta_minima ?? ""),
         porcentaje_casa: String(rem.porcentaje_casa ?? ""),
         tipo: rem.tipo ?? "vivo",
-        opens_date: toCaracasDate(rem.opens_at) || toCaracasDate(rem.created_at),
-        opens_time: toCaracasTime(rem.opens_at) || "07:00:00",
-        closes_date: toCaracasDate(rem.closes_at) || toCaracasDate(rem.closed_at) || toCaracasDate(rem.created_at),
-        closes_time: toCaracasTime(rem.closes_at) || "19:00:00",
+        opens_dd: openParts.dd,
+        opens_mm: openParts.mm,
+        opens_aa: openParts.yy,
+        opens_time: toCaracasTime12(rem.opens_at) || "7:00 am",
+        closes_dd: closeParts.dd,
+        closes_mm: closeParts.mm,
+        closes_aa: closeParts.yy,
+        closes_time: toCaracasTime12(rem.closes_at) || "7:00 pm",
       })
 
       const { data: ra, error: raErr } = await supabase
         .from("races")
-        .select("id,nombre,hipodromo,numero_carrera,fecha,hora_programada,estado")
+        .select("id,nombre,hipodromo,numero_carrera,numero_carrera_text,dia,distancia_m,fecha,hora_programada,estado")
         .eq("id", rem.race_id)
         .maybeSingle()
 
       if (raErr) throw new Error(raErr.message)
       const raceRow = ra as RaceRow
       setRace(raceRow)
+      const raceFechaParts = splitIsoDate(raceRow?.fecha ?? "")
+      const hora12 = raceRow?.hora_programada ? formatTime12hFrom24(raceRow.hora_programada) : ""
       setRaceDraft({
-        nombre: raceRow?.nombre ?? "",
+        descripcion: raceRow?.nombre ?? "",
         hipodromo: raceRow?.hipodromo ?? "",
-        numero_carrera: raceRow?.numero_carrera ? String(raceRow.numero_carrera) : "",
-        fecha: raceRow?.fecha ?? "",
-        hora_programada: raceRow?.hora_programada ?? "",
+        numero_carrera_text:
+          raceRow?.numero_carrera_text ?? (raceRow?.numero_carrera ? String(raceRow.numero_carrera) : ""),
+        dia: raceRow?.dia ?? "",
+        distancia_m: raceRow?.distancia_m != null ? String(raceRow.distancia_m) : "",
+        fecha_dd: raceFechaParts.dd,
+        fecha_mm: raceFechaParts.mm,
+        fecha_aa: raceFechaParts.yy,
+        hora_programada: hora12,
         estado: raceRow?.estado ?? "programada",
       })
 
       const { data: hs, error: hsErr } = await supabase
         .from("horses")
-        .select("id,race_id,numero,nombre,jinete,comentarios,precio_salida")
+        .select("id,race_id,numero,nombre,jinete,comentarios,precio_salida,retirado")
         .eq("race_id", rem.race_id)
         .order("numero", { ascending: true })
 
@@ -300,6 +392,7 @@ export default function AdminRemateDetailPage() {
         jinete: h.jinete ?? "",
         comentarios: h.comentarios ?? "",
         precio_salida: String(h.precio_salida ?? ""),
+        retirado: !!h.retirado,
       }))
       setHorses(horseDrafts)
       setDeletedHorseIds([])
@@ -392,9 +485,18 @@ export default function AdminRemateDetailPage() {
     if (!remateDraft || !raceDraft) return false
     const estadoActual = String(remate?.estado || "").toLowerCase()
     if (estadoActual === "cancelado" || remate?.archived_at) return false
-    if (!raceDraft.nombre.trim()) return false
-    if (!raceDraft.fecha) return false
-    if (!remateDraft.nombre.trim()) return false
+
+    if (!raceDraft.descripcion.trim()) return false
+    if (!raceDraft.hipodromo.trim()) return false
+    if (!raceDraft.numero_carrera_text.trim()) return false
+    if (!raceDraft.dia.trim()) return false
+
+    const raceFechaISO = parseDateParts(raceDraft.fecha_dd, raceDraft.fecha_mm, raceDraft.fecha_aa)
+    if (!raceFechaISO) return false
+    const raceHora24 = parseTime12hTo24(raceDraft.hora_programada)
+    if (!raceHora24) return false
+    if (!raceDraft.distancia_m.trim()) return false
+    if (!(n(raceDraft.distancia_m) > 0)) return false
 
     const inc = n(remateDraft.incremento_minimo)
     const min = n(remateDraft.apuesta_minima)
@@ -404,10 +506,13 @@ export default function AdminRemateDetailPage() {
     if (!(min > 0)) return false
     if (!(casa >= 0 && casa <= 100)) return false
 
-    if (!remateDraft.opens_date || !remateDraft.opens_time) return false
-    if (!remateDraft.closes_date || !remateDraft.closes_time) return false
-    const o = buildCaracasTs(remateDraft.opens_date, remateDraft.opens_time)
-    const c = buildCaracasTs(remateDraft.closes_date, remateDraft.closes_time)
+    const oDateISO = parseDateParts(remateDraft.opens_dd, remateDraft.opens_mm, remateDraft.opens_aa)
+    const cDateISO = parseDateParts(remateDraft.closes_dd, remateDraft.closes_mm, remateDraft.closes_aa)
+    const oTime24 = parseTime12hTo24(remateDraft.opens_time)
+    const cTime24 = parseTime12hTo24(remateDraft.closes_time)
+    if (!oDateISO || !cDateISO || !oTime24 || !cTime24) return false
+    const o = buildCaracasTs(oDateISO, oTime24)
+    const c = buildCaracasTs(cDateISO, cTime24)
     if (!o || !c) return false
     if (new Date(o).getTime() >= new Date(c).getTime()) return false
 
@@ -438,14 +543,15 @@ export default function AdminRemateDetailPage() {
     const tempId = uid()
     setHorses((prev) => [
       ...prev,
-      {
-        tempId,
-        numero: nextNum,
-        nombre: "",
-        jinete: "",
-        comentarios: "",
-        precio_salida: remateDraft?.apuesta_minima || "",
-      },
+        {
+          tempId,
+          numero: nextNum,
+          nombre: "",
+          jinete: "",
+          comentarios: "",
+          precio_salida: remateDraft?.apuesta_minima || "",
+          retirado: false,
+        },
     ])
     setHorseRulesEnabled((prev) => ({ ...prev, [tempId]: false }))
   }
@@ -529,27 +635,40 @@ export default function AdminRemateDetailPage() {
       const adminId = await ensureAdmin()
       if (!adminId) return
 
+      const raceFechaISO = parseDateParts(raceDraft.fecha_dd, raceDraft.fecha_mm, raceDraft.fecha_aa)
+      const raceHora24 = parseTime12hTo24(raceDraft.hora_programada)
+      const numeroCarreraText = raceDraft.numero_carrera_text.trim()
+      const numeroCarreraNum =
+        numeroCarreraText && Number.isFinite(Number(numeroCarreraText)) ? Number(numeroCarreraText) : null
+
       const raceUpdate: any = {
-        nombre: raceDraft.nombre.trim(),
-        fecha: raceDraft.fecha,
+        nombre: raceDraft.descripcion.trim(),
+        fecha: raceFechaISO,
         estado: raceDraft.estado.trim() || race.estado,
+        dia: raceDraft.dia.trim(),
+        distancia_m: n(raceDraft.distancia_m),
+        numero_carrera_text: numeroCarreraText || null,
       }
       raceUpdate.hipodromo = raceDraft.hipodromo.trim() ? raceDraft.hipodromo.trim() : null
-      raceUpdate.numero_carrera = raceDraft.numero_carrera.trim() ? Number(raceDraft.numero_carrera) : null
-      raceUpdate.hora_programada = raceDraft.hora_programada.trim() ? raceDraft.hora_programada.trim() : null
+      raceUpdate.numero_carrera = numeroCarreraNum
+      raceUpdate.hora_programada = raceHora24 ? raceHora24 : null
 
       const { error: raceErr } = await supabase.from("races").update(raceUpdate).eq("id", race.id)
       if (raceErr) throw new Error(raceErr.message)
 
+      const opensDateISO = parseDateParts(remateDraft.opens_dd, remateDraft.opens_mm, remateDraft.opens_aa)
+      const closesDateISO = parseDateParts(remateDraft.closes_dd, remateDraft.closes_mm, remateDraft.closes_aa)
+      const opensTime24 = parseTime12hTo24(remateDraft.opens_time)
+      const closesTime24 = parseTime12hTo24(remateDraft.closes_time)
+
       const remateUpdate: any = {
-        nombre: remateDraft.nombre.trim(),
         estado: remateDraft.estado.trim() || remate.estado,
         incremento_minimo: n(remateDraft.incremento_minimo),
         apuesta_minima: n(remateDraft.apuesta_minima),
         porcentaje_casa: n(remateDraft.porcentaje_casa),
         tipo: remateDraft.tipo || remate.tipo || "vivo",
-        opens_at: buildCaracasTs(remateDraft.opens_date, remateDraft.opens_time),
-        closes_at: buildCaracasTs(remateDraft.closes_date, remateDraft.closes_time),
+        opens_at: buildCaracasTs(opensDateISO, opensTime24),
+        closes_at: buildCaracasTs(closesDateISO, closesTime24),
       }
       const { error: remErr } = await supabase.from("remates").update(remateUpdate).eq("id", remate.id)
       if (remErr) throw new Error(remErr.message)
@@ -570,6 +689,7 @@ export default function AdminRemateDetailPage() {
               jinete: h.jinete.trim(),
               comentarios: h.comentarios.trim() ? h.comentarios.trim() : null,
               precio_salida: n(h.precio_salida),
+              retirado: !!h.retirado,
             })
             .eq("id", h.id)
           if (hErr) throw new Error(hErr.message)
@@ -583,6 +703,7 @@ export default function AdminRemateDetailPage() {
               jinete: h.jinete.trim(),
               comentarios: h.comentarios.trim() ? h.comentarios.trim() : null,
               precio_salida: n(h.precio_salida),
+              retirado: !!h.retirado,
             })
             .select("id")
             .single()
@@ -817,12 +938,38 @@ export default function AdminRemateDetailPage() {
     return { bruto, casa, neto }
   }, [topByHorse, horses])
 
-  const raceInfo = raceDraft ?? race
-  const raceLabel = raceInfo
-    ? `${raceInfo.hipodromo ?? "Hipodromo"} - Carrera #${raceInfo.numero_carrera ?? "-"} - ${raceInfo.fecha || ""}${
-        raceInfo.hora_programada ? ` ${raceInfo.hora_programada}` : ""
-      }`.trim()
-    : "Carrera"
+  const raceLabel = useMemo(() => {
+    if (raceDraft) {
+      const dateIso = parseDateParts(raceDraft.fecha_dd, raceDraft.fecha_mm, raceDraft.fecha_aa)
+      return [
+        raceDraft.hipodromo || "Hipódromo",
+        raceDraft.dia || null,
+        dateIso ? formatDateShort(dateIso) : null,
+        raceDraft.hora_programada ? raceDraft.hora_programada : null,
+        raceDraft.numero_carrera_text || null,
+        raceDraft.distancia_m ? `${raceDraft.distancia_m} m` : null,
+      ]
+        .filter(Boolean)
+        .join(" - ")
+    }
+    if (race) {
+      return [
+        race.hipodromo ?? "Hipódromo",
+        race.dia ? race.dia : null,
+        formatDateShort(race.fecha),
+        race.hora_programada ? formatTime12hFrom24(race.hora_programada) : null,
+        race.numero_carrera_text
+          ? race.numero_carrera_text
+          : race.numero_carrera != null
+          ? `Carrera ${race.numero_carrera}`
+          : null,
+        race.distancia_m ? `${race.distancia_m} m` : null,
+      ]
+        .filter(Boolean)
+        .join(" - ")
+    }
+    return "Carrera"
+  }, [raceDraft, race])
 
   if (loading) {
     return <div className="min-h-dvh flex items-center justify-center text-zinc-50">Cargando remate...</div>
@@ -968,36 +1115,106 @@ export default function AdminRemateDetailPage() {
           </div>
         ) : null}
 
-        <section className="mt-6 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+                <section className="mt-6 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <h2 className="text-base font-semibold">1) Carrera</h2>
 
-          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="mt-4 space-y-3">
             <div>
-              <label className="text-xs text-zinc-400">Descripcion de la carrera</label>
+              <label className="text-xs text-zinc-400">Descripci?n de la carrera</label>
               <input
-                value={raceDraft?.nombre ?? ""}
-                onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, nombre: e.target.value } : prev))}
+                value={raceDraft?.descripcion ?? ""}
+                onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, descripcion: e.target.value } : prev))}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
               />
             </div>
 
-            <div>
-              <label className="text-xs text-zinc-400">Hipodromo</label>
-              <input
-                value={raceDraft?.hipodromo ?? ""}
-                onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, hipodromo: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-zinc-400">Hip?dromo</label>
+                <select
+                  value={raceDraft?.hipodromo ?? ""}
+                  onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, hipodromo: e.target.value } : prev))}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                >
+                  <option value="">Selecciona?</option>
+                  <option value="La Rinconada">La Rinconada</option>
+                  <option value="Valencia">Valencia</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-zinc-400">D?a</label>
+                <input
+                  value={raceDraft?.dia ?? ""}
+                  onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, dia: e.target.value } : prev))}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                  placeholder="Domingo"
+                />
+              </div>
             </div>
 
-            <div>
-              <label className="text-xs text-zinc-400">No. carrera</label>
-              <input
-                inputMode="numeric"
-                value={raceDraft?.numero_carrera ?? ""}
-                onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, numero_carrera: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-zinc-400">Fecha (DD/MM/AA)</label>
+                <div className="mt-1 flex items-center gap-1">
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={raceDraft?.fecha_dd ?? ""}
+                    onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, fecha_dd: e.target.value } : prev))}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="DD"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={raceDraft?.fecha_mm ?? ""}
+                    onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, fecha_mm: e.target.value } : prev))}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="MM"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={raceDraft?.fecha_aa ?? ""}
+                    onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, fecha_aa: e.target.value } : prev))}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="AA"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-zinc-400">Hora (am/pm)</label>
+                <input
+                  value={raceDraft?.hora_programada ?? ""}
+                  onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, hora_programada: e.target.value } : prev))}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                  placeholder="1:30 pm"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-zinc-400">N? carrera (texto)</label>
+                <input
+                  value={raceDraft?.numero_carrera_text ?? ""}
+                  onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, numero_carrera_text: e.target.value } : prev))}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                  placeholder="6 - PRIMERA V?LIDA"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-400">Distancia (m)</label>
+                <input
+                  inputMode="numeric"
+                  value={raceDraft?.distancia_m ?? ""}
+                  onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, distancia_m: e.target.value } : prev))}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                  placeholder="1600"
+                />
+              </div>
             </div>
 
             <div>
@@ -1008,42 +1225,14 @@ export default function AdminRemateDetailPage() {
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
               />
             </div>
-
-            <div>
-              <label className="text-xs text-zinc-400">Fecha</label>
-              <input
-                type="date"
-                value={raceDraft?.fecha ?? ""}
-                onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, fecha: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-zinc-400">Hora (opcional)</label>
-              <input
-                type="time"
-                value={raceDraft?.hora_programada ?? ""}
-                onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, hora_programada: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
-            </div>
           </div>
         </section>
 
-        <section className="mt-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+
+                <section className="mt-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <h2 className="text-base font-semibold">2) Remate</h2>
 
           <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-zinc-400">Nombre</label>
-              <input
-                value={remateDraft?.nombre ?? ""}
-                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, nombre: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
-            </div>
-
             <div>
               <label className="text-xs text-zinc-400">Estado</label>
               <select
@@ -1054,11 +1243,24 @@ export default function AdminRemateDetailPage() {
                 <option value="abierto">abierto</option>
                 <option value="cerrado">cerrado</option>
                 <option value="liquidado">liquidado</option>
+                <option value="cancelado">cancelado</option>
               </select>
             </div>
 
             <div>
-              <label className="text-xs text-zinc-400">Apuesta minima</label>
+              <label className="text-xs text-zinc-400">Tipo</label>
+              <select
+                value={remateDraft?.tipo ?? "vivo"}
+                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, tipo: e.target.value } : prev))}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+              >
+                <option value="vivo">En vivo</option>
+                <option value="adelantado">Adelantado</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-400">Apuesta m?nima</label>
               <input
                 inputMode="decimal"
                 value={remateDraft?.apuesta_minima ?? ""}
@@ -1068,7 +1270,7 @@ export default function AdminRemateDetailPage() {
             </div>
 
             <div>
-              <label className="text-xs text-zinc-400">Incremento minimo</label>
+              <label className="text-xs text-zinc-400">Incremento</label>
               <input
                 inputMode="decimal"
                 value={remateDraft?.incremento_minimo ?? ""}
@@ -1088,25 +1290,35 @@ export default function AdminRemateDetailPage() {
             </div>
 
             <div>
-              <label className="text-xs text-zinc-400">Tipo</label>
-              <select
-                value={remateDraft?.tipo ?? "vivo"}
-                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, tipo: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              >
-                <option value="vivo">En vivo</option>
-                <option value="adelantado">Adelantado</option>
-              </select>
-            </div>
-
-            <div>
               <label className="text-xs text-zinc-400">Apertura (fecha)</label>
-              <input
-                type="date"
-                value={remateDraft?.opens_date ?? ""}
-                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_date: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
+              <div className="mt-1 flex items-center gap-1">
+                <input
+                  inputMode="numeric"
+                  maxLength={2}
+                  value={remateDraft?.opens_dd ?? ""}
+                  onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_dd: e.target.value } : prev))}
+                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                  placeholder="DD"
+                />
+                <span className="text-zinc-500">/</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={2}
+                  value={remateDraft?.opens_mm ?? ""}
+                  onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_mm: e.target.value } : prev))}
+                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                  placeholder="MM"
+                />
+                <span className="text-zinc-500">/</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={2}
+                  value={remateDraft?.opens_aa ?? ""}
+                  onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_aa: e.target.value } : prev))}
+                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                  placeholder="AA"
+                />
+              </div>
             </div>
 
             <div>
@@ -1115,21 +1327,49 @@ export default function AdminRemateDetailPage() {
                 value={remateDraft?.opens_time ?? ""}
                 onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_time: e.target.value } : prev))}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="07:00:00"
+                placeholder="10:30 am"
               />
             </div>
 
             <div>
               <label className="text-xs text-zinc-400">Cierre (fecha)</label>
-              <input
-                type="date"
-                value={remateDraft?.closes_date ?? ""}
-                onChange={(e) => {
-                  setCloseTouched(true)
-                  setRemateDraft((prev) => (prev ? { ...prev, closes_date: e.target.value } : prev))
-                }}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
+              <div className="mt-1 flex items-center gap-1">
+                <input
+                  inputMode="numeric"
+                  maxLength={2}
+                  value={remateDraft?.closes_dd ?? ""}
+                  onChange={(e) => {
+                    setRemateDraft((prev) => (prev ? { ...prev, closes_dd: e.target.value } : prev))
+                    setCloseTouched(true)
+                  }}
+                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                  placeholder="DD"
+                />
+                <span className="text-zinc-500">/</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={2}
+                  value={remateDraft?.closes_mm ?? ""}
+                  onChange={(e) => {
+                    setRemateDraft((prev) => (prev ? { ...prev, closes_mm: e.target.value } : prev))
+                    setCloseTouched(true)
+                  }}
+                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                  placeholder="MM"
+                />
+                <span className="text-zinc-500">/</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={2}
+                  value={remateDraft?.closes_aa ?? ""}
+                  onChange={(e) => {
+                    setRemateDraft((prev) => (prev ? { ...prev, closes_aa: e.target.value } : prev))
+                    setCloseTouched(true)
+                  }}
+                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                  placeholder="AA"
+                />
+              </div>
             </div>
 
             <div>
@@ -1137,18 +1377,16 @@ export default function AdminRemateDetailPage() {
               <input
                 value={remateDraft?.closes_time ?? ""}
                 onChange={(e) => {
-                  setCloseTouched(true)
                   setRemateDraft((prev) => (prev ? { ...prev, closes_time: e.target.value } : prev))
+                  setCloseTouched(true)
                 }}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="19:00:00"
+                placeholder="7:00 pm"
               />
-            </div>
-            <div className="md:col-span-2 text-[11px] text-zinc-500">
-              Horario Venezuela (America/Caracas).
             </div>
           </div>
         </section>
+
 
         <section className="mt-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <div className="flex items-center justify-between gap-3">
@@ -1169,12 +1407,22 @@ export default function AdminRemateDetailPage() {
                 <div key={h.tempId} className="rounded-2xl bg-zinc-950/50 border border-zinc-800 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="text-sm font-semibold">Caballo</div>
-                    <button
-                      onClick={() => removeHorse(h.tempId)}
-                      className="rounded-xl bg-red-500/10 text-red-200 ring-1 ring-red-500/20 px-3 py-1 text-xs"
-                    >
-                      Quitar
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-zinc-300 flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={!!h.retirado}
+                          onChange={(e) => updateHorse(h.tempId, { retirado: e.target.checked })}
+                        />
+                        Retirado
+                      </label>
+                      <button
+                        onClick={() => removeHorse(h.tempId)}
+                        className="rounded-xl bg-red-500/10 text-red-200 ring-1 ring-red-500/20 px-3 py-1 text-xs"
+                      >
+                        Quitar
+                      </button>
+                    </div>
                   </div>
 
                   <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">

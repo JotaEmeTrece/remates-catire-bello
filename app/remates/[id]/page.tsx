@@ -30,6 +30,9 @@ type RaceRow = {
   nombre: string
   hipodromo: string | null
   numero_carrera: number | null
+  numero_carrera_text?: string | null
+  dia?: string | null
+  distancia_m?: string | number | null
   fecha: string
   hora_programada: string | null
   estado: string
@@ -44,6 +47,7 @@ type HorseRow = {
   jinete: string | null
   entrenador: string | null
   comentarios: string | null
+  retirado?: boolean | null
 }
 
 type BidRow = {
@@ -92,6 +96,25 @@ function formatDate(v: string | null) {
   if (!v) return "-"
   const d = new Date(v)
   return Number.isNaN(d.getTime()) ? "-" : d.toLocaleString("es-VE")
+}
+
+function formatDateShort(iso: string | null | undefined) {
+  if (!iso) return ""
+  const parts = iso.split("-")
+  if (parts.length !== 3) return iso
+  return `${parts[2]}/${parts[1]}/${parts[0].slice(-2)}`
+}
+
+function formatTime12hFrom24(time24: string | null | undefined) {
+  if (!time24) return ""
+  const parts = time24.split(":")
+  if (parts.length < 2) return ""
+  const h24 = Number(parts[0])
+  const m = parts[1]
+  if (!Number.isFinite(h24)) return ""
+  const isPm = h24 >= 12
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+  return `${h12}:${m} ${isPm ? "pm" : "am"}`
 }
 
 function badgeClass(estado: string) {
@@ -194,7 +217,7 @@ export default function RemateDetallePage() {
 
     const { data: ra, error: raErr } = await supabase
       .from("races")
-      .select("id,nombre,hipodromo,numero_carrera,fecha,hora_programada,estado")
+      .select("id,nombre,hipodromo,numero_carrera,numero_carrera_text,dia,distancia_m,fecha,hora_programada,estado")
       .eq("id", rem.race_id)
       .maybeSingle()
 
@@ -203,7 +226,7 @@ export default function RemateDetallePage() {
 
     const { data: h, error: hErr } = await supabase
       .from("horses")
-      .select("id,race_id,numero,nombre,precio_salida,jinete,entrenador,comentarios")
+      .select("id,race_id,numero,nombre,precio_salida,jinete,entrenador,comentarios,retirado")
       .eq("race_id", rem.race_id)
       .order("numero", { ascending: true })
 
@@ -524,20 +547,26 @@ export default function RemateDetallePage() {
             </span>
           </div>
 
-        <h1 className="mt-3 text-xl font-bold">{remate.nombre}</h1>
-
-        <div className="mt-2 text-xs text-zinc-400">
+        <h1 className="mt-3 text-xl font-bold">
           {race ? (
             <>
               {race.hipodromo ? `${race.hipodromo} - ` : ""}
-              {race.numero_carrera != null ? `Carrera ${race.numero_carrera} - ` : ""}
-              {race.fecha}
-              {race.hora_programada ? ` ${race.hora_programada}` : ""}
+              {race.dia ? `${race.dia} - ` : ""}
+              {formatDateShort(race.fecha)}
+              {race.hora_programada ? ` ${formatTime12hFrom24(race.hora_programada)}` : ""}
+              {race.numero_carrera_text
+                ? ` - ${race.numero_carrera_text}`
+                : race.numero_carrera != null
+                ? ` - Carrera ${race.numero_carrera}`
+                : ""}
+              {race.distancia_m ? ` - ${race.distancia_m} m` : ""}
             </>
           ) : (
-            "-"
+            "Carrera"
           )}
-        </div>
+        </h1>
+
+        <div className="mt-2 text-xs text-zinc-400">{race?.nombre || "-"}</div>
 
         {!userId ? (
           <div className="mt-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 text-sm text-zinc-200">
@@ -622,6 +651,7 @@ export default function RemateDetallePage() {
                 const current = computed.currentByHorse[h.id] ?? salida
                 const nextMin = computed.nextMinByHorse[h.id] ?? current
                 const leader = computed.leaderByHorse[h.id]
+                const isRetirado = !!h.retirado
                 const leaderLabel = leader
                   ? leader.is_me
                     ? "Tu"
@@ -630,7 +660,7 @@ export default function RemateDetallePage() {
 
                 const manual = manualByHorse[h.id] ?? ""
                 const manualMin = computed.manualMinByHorse[h.id] ?? nextMin + 10
-                const disabled = !canBid || placing === h.id
+                const disabled = !canBid || placing === h.id || isRetirado
 
                 return (
                     <div key={h.id} className="border-b border-zinc-800 last:border-b-0">
@@ -648,11 +678,15 @@ export default function RemateDetallePage() {
 
                         <div className="px-3 py-4 text-right">
                           <div className="text-lg font-semibold text-amber-300">{formatMoney(current)} Bs</div>
-                          <div className="text-sm text-amber-200">{leaderLabel}</div>
+                          <div className={isRetirado ? "text-sm text-red-300" : "text-sm text-amber-200"}>
+                            {isRetirado ? "Retirado" : leaderLabel}
+                          </div>
                         </div>
 
                         <div className="px-3 pb-4 col-start-2 col-span-2">
-                          {isAdmin ? (
+                          {isRetirado ? (
+                            <div className="text-[11px] text-red-300">Caballo retirado</div>
+                          ) : isAdmin ? (
                             <div className="text-[11px] text-zinc-500">Solo lectura (admin)</div>
                           ) : (
                             <>
@@ -690,10 +724,14 @@ export default function RemateDetallePage() {
                       <div className="px-4 py-4 text-sm text-zinc-200">{h.jinete ?? "-"}</div>
                       <div className="px-4 py-4">
                         <div className="text-base font-semibold text-amber-300">{formatMoney(current)} Bs</div>
-                        <div className="text-xs text-amber-200">{leaderLabel}</div>
+                        <div className={isRetirado ? "text-xs text-red-300" : "text-xs text-amber-200"}>
+                          {isRetirado ? "Retirado" : leaderLabel}
+                        </div>
                       </div>
                       <div className="px-4 py-4">
-                        {isAdmin ? (
+                        {isRetirado ? (
+                          <div className="text-xs text-red-300">Caballo retirado</div>
+                        ) : isAdmin ? (
                           <div className="text-xs text-zinc-500">Solo lectura (admin)</div>
                         ) : (
                           <div className="flex items-start gap-2">

@@ -16,6 +16,19 @@ type RemateRow = {
   cancelled_at?: string | null
 }
 
+type RaceRow = {
+  id: string
+  nombre: string
+  hipodromo: string | null
+  numero_carrera: number | null
+  numero_carrera_text?: string | null
+  dia?: string | null
+  distancia_m?: string | number | null
+  fecha: string
+  hora_programada: string | null
+  estado: string
+}
+
 type HorseRow = {
   id: string
   race_id: string
@@ -53,6 +66,25 @@ function formatDT(v: string | null | undefined) {
   return d.toLocaleString("es-VE")
 }
 
+function formatDateShort(iso: string | null | undefined) {
+  if (!iso) return ""
+  const parts = iso.split("-")
+  if (parts.length !== 3) return iso
+  return `${parts[2]}/${parts[1]}/${parts[0].slice(-2)}`
+}
+
+function formatTime12hFrom24(time24: string | null | undefined) {
+  if (!time24) return ""
+  const parts = time24.split(":")
+  if (parts.length < 2) return ""
+  const h24 = Number(parts[0])
+  const m = parts[1]
+  if (!Number.isFinite(h24)) return ""
+  const isPm = h24 >= 12
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+  return `${h12}:${m} ${isPm ? "pm" : "am"}`
+}
+
 function pillEstado(estado: string) {
   const e = String(estado || "").toLowerCase()
   if (e === "abierto") return "bg-emerald-500/10 text-emerald-200 ring-1 ring-emerald-500/20"
@@ -74,6 +106,7 @@ export default function AdminRematesPage() {
   const [ok, setOk] = useState("")
 
   const [remates, setRemates] = useState<RemateRow[]>([])
+  const [racesById, setRacesById] = useState<Record<string, RaceRow>>({})
   const [openId, setOpenId] = useState<string | null>(null)
 
   const [horses, setHorses] = useState<HorseRow[]>([])
@@ -122,7 +155,27 @@ export default function AdminRematesPage() {
         .limit(200)
 
       if (listErr) throw new Error(listErr.message)
-      setRemates((data ?? []) as RemateRow[])
+      const rems = (data ?? []) as RemateRow[]
+      setRemates(rems)
+
+      const raceIds = Array.from(new Set(rems.map((r) => r.race_id).filter(Boolean)))
+      if (raceIds.length > 0) {
+        const { data: races, error: racesErr } = await supabase
+          .from("races")
+          .select("id,nombre,hipodromo,numero_carrera,numero_carrera_text,dia,distancia_m,fecha,hora_programada,estado")
+          .in("id", raceIds)
+
+        if (racesErr) {
+          console.error("Error cargando races:", racesErr.message)
+          setRacesById({})
+        } else {
+          const map: Record<string, RaceRow> = {}
+          for (const rc of (races ?? []) as RaceRow[]) map[rc.id] = rc
+          setRacesById(map)
+        }
+      } else {
+        setRacesById({})
+      }
     } catch (e: any) {
       setError(e?.message || "Error cargando remates.")
       setRemates([])
@@ -391,6 +444,7 @@ export default function AdminRematesPage() {
           ) : (
             activeRemates.map((r) => {
               const isOpen = openId === r.id
+              const race = racesById[r.race_id]
 
               const estado = String(r.estado || "").toLowerCase()
               const canCerrar = estado === "abierto"
@@ -405,9 +459,24 @@ export default function AdminRematesPage() {
                 <div key={r.id} className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-base font-semibold">{r.nombre}</div>
+                      <div className="text-base font-semibold">{race?.nombre || r.nombre}</div>
                       <div className="mt-1 text-xs text-zinc-500">
-                        ID: {r.id.slice(0, 8)}... - Race: {r.race_id.slice(0, 8)}... - {formatDT(r.created_at)}
+                        {race ? (
+                          <>
+                            {race.hipodromo ? `${race.hipodromo} - ` : ""}
+                            {race.dia ? `${race.dia} - ` : ""}
+                            {formatDateShort(race.fecha)}
+                            {race.hora_programada ? ` ${formatTime12hFrom24(race.hora_programada)}` : ""}
+                            {race.numero_carrera_text
+                              ? ` - ${race.numero_carrera_text}`
+                              : race.numero_carrera != null
+                              ? ` - Carrera ${race.numero_carrera}`
+                              : ""}
+                            {race.distancia_m ? ` - ${race.distancia_m} m` : ""}
+                          </>
+                        ) : (
+                          `ID: ${r.id.slice(0, 8)}... - Race: ${r.race_id.slice(0, 8)}... - ${formatDT(r.created_at)}`
+                        )}
                       </div>
                     </div>
                     <div className={`rounded-full px-3 py-1 text-xs font-semibold ${pillEstado(estadoLabel)}`}>{estadoLabel}</div>
@@ -539,7 +608,7 @@ export default function AdminRematesPage() {
                         <div key={r.id} className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <div className="text-base font-semibold">{r.nombre}</div>
+                              <div className="text-base font-semibold">{racesById[r.race_id]?.nombre || r.nombre}</div>
                               <div className="mt-1 text-xs text-zinc-500">
                                 ID: {r.id.slice(0, 8)}... - Race: {r.race_id.slice(0, 8)}... - {formatDT(r.created_at)}
                               </div>

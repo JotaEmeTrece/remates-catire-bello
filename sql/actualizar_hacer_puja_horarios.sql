@@ -67,6 +67,9 @@ begin
   if not found then
     raise exception 'Caballo no pertenece a la carrera de este remate';
   end if;
+  if coalesce(v_horse.retirado, false) then
+    raise exception 'Caballo retirado';
+  end if;
 
   -- 3) Top actual (si existe)
   select b.user_id, b.monto, b.id

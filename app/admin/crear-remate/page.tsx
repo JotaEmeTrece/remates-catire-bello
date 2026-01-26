@@ -45,20 +45,85 @@ function formatTimeInTz(d: Date, timeZone: string) {
   }).format(d)
 }
 
-function caracasNowParts() {
-  const d = new Date()
-  return {
-    date: formatDateInTz(d, CARACAS_TZ),
-    time: formatTimeInTz(d, CARACAS_TZ),
-  }
+function weekdayInTz(d: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("es-VE", { timeZone, weekday: "long" }).format(d)
 }
 
-function buildCaracasTs(dateStr: string, timeStr: string) {
-  if (!dateStr) return null
-  let t = (timeStr || "").trim()
+function splitIsoDate(dateIso: string) {
+  if (!dateIso) return { dd: "", mm: "", yy: "" }
+  const parts = dateIso.split("-")
+  if (parts.length !== 3) return { dd: "", mm: "", yy: "" }
+  return { dd: parts[2], mm: parts[1], yy: parts[0].slice(-2) }
+}
+
+function parseDateParts(ddRaw: string, mmRaw: string, yyRaw: string) {
+  const dd = ddRaw.trim().padStart(2, "0")
+  const mm = mmRaw.trim().padStart(2, "0")
+  const yy = yyRaw.trim().padStart(2, "0")
+  const d = Number(dd)
+  const m = Number(mm)
+  const y = Number(yy)
+  if (!Number.isFinite(d) || !Number.isFinite(m) || !Number.isFinite(y)) return ""
+  if (d < 1 || d > 31) return ""
+  if (m < 1 || m > 12) return ""
+  const yyyy = `20${yy}`
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function formatTime12hFrom24(time24: string) {
+  if (!time24) return ""
+  const parts = time24.split(":")
+  if (parts.length < 2) return ""
+  const h24 = Number(parts[0])
+  const m = parts[1]
+  if (!Number.isFinite(h24)) return ""
+  const isPm = h24 >= 12
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+  return `${h12}:${m} ${isPm ? "pm" : "am"}`
+}
+
+function parseTime12hTo24(raw: string) {
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/)
+  if (!m) return ""
+  let h = Number(m[1])
+  const mins = m[2] ?? "00"
+  const ap = m[3]
+  if (!Number.isFinite(h) || h < 1 || h > 12) return ""
+  const mm = Number(mins)
+  if (!Number.isFinite(mm) || mm < 0 || mm > 59) return ""
+  if (ap === "pm" && h !== 12) h += 12
+  if (ap === "am" && h === 12) h = 0
+  const hh = String(h).padStart(2, "0")
+  const min = String(mm).padStart(2, "0")
+  return `${hh}:${min}:00`
+}
+
+function buildCaracasTs(dateIso: string, time24: string) {
+  if (!dateIso) return null
+  let t = (time24 || "").trim()
   if (!t) t = "00:00:00"
   if (t.length === 5) t = `${t}:00`
-  return `${dateStr}T${t}-04:00`
+  return `${dateIso}T${t}-04:00`
+}
+
+function caracasNowParts() {
+  const d = new Date()
+  const dateIso = formatDateInTz(d, CARACAS_TZ)
+  const time24 = formatTimeInTz(d, CARACAS_TZ)
+  const { dd, mm, yy } = splitIsoDate(dateIso)
+  return {
+    dateIso,
+    time24,
+    dd,
+    mm,
+    yy,
+    time12: formatTime12hFrom24(time24),
+    weekday: weekdayInTz(d, CARACAS_TZ),
+  }
 }
 
 function uid() {
@@ -90,42 +155,55 @@ export default function AdminCrearRematePage() {
   // =========================
   // Form Carrera (races)
   // =========================
-  const [raceNombre, setRaceNombre] = useState("Carrera de Prueba")
+  const [raceDescripcion, setRaceDescripcion] = useState("Carrera de Prueba")
+  const [racePais, setRacePais] = useState("Venezuela")
   const [raceHipodromo, setRaceHipodromo] = useState("La Rinconada")
-  const [raceNumeroCarrera, setRaceNumeroCarrera] = useState("1")
-  const [raceFecha, setRaceFecha] = useState(() => {
-    const d = new Date()
-    const yyyy = d.getFullYear()
-    const mm = String(d.getMonth() + 1).padStart(2, "0")
-    const dd = String(d.getDate()).padStart(2, "0")
-    return `${yyyy}-${mm}-${dd}`
-  })
-  const [raceHora, setRaceHora] = useState("15:00:00")
+  const [raceNumeroCarreraText, setRaceNumeroCarreraText] = useState("1")
+  const nowCaracas = caracasNowParts()
+  const [raceFechaDD, setRaceFechaDD] = useState(nowCaracas.dd)
+  const [raceFechaMM, setRaceFechaMM] = useState(nowCaracas.mm)
+  const [raceFechaAA, setRaceFechaAA] = useState(nowCaracas.yy)
+  const [raceHora, setRaceHora] = useState(formatTime12hFrom24("15:00:00"))
+  const [raceDia, setRaceDia] = useState(nowCaracas.weekday ? nowCaracas.weekday.charAt(0).toUpperCase() + nowCaracas.weekday.slice(1) : "")
+  const [raceDistancia, setRaceDistancia] = useState("")
 
   // =========================
   // Form Remate (remates)
   // =========================
-  const [remateNombre, setRemateNombre] = useState("Remate de Prueba")
   const [incrementoMinimo, setIncrementoMinimo] = useState("20")
-  const [apuestaMinima, setApuestaMinima] = useState("60")
+  const [apuestaMinima, setApuestaMinima] = useState("40")
   const [porcentajeCasa, setPorcentajeCasa] = useState("25")
-  const nowCaracas = caracasNowParts()
   const [remateTipo, setRemateTipo] = useState<"vivo" | "adelantado">("vivo")
-  const [opensDate, setOpensDate] = useState(nowCaracas.date)
-  const [opensTime, setOpensTime] = useState(nowCaracas.time)
-  const [closesDate, setClosesDate] = useState(raceFecha)
-  const [closesTime, setClosesTime] = useState(raceHora || nowCaracas.time)
+  const [opensDD, setOpensDD] = useState(nowCaracas.dd)
+  const [opensMM, setOpensMM] = useState(nowCaracas.mm)
+  const [opensAA, setOpensAA] = useState(nowCaracas.yy)
+  const [opensTime, setOpensTime] = useState(nowCaracas.time12 || "12:00 am")
+  const [closesDD, setClosesDD] = useState(raceFechaDD)
+  const [closesMM, setClosesMM] = useState(raceFechaMM)
+  const [closesAA, setClosesAA] = useState(raceFechaAA)
+  const [closesTime, setClosesTime] = useState(raceHora || nowCaracas.time12 || "12:00 am")
   const [closeTouched, setCloseTouched] = useState(false)
 
   useEffect(() => {
-    if (!closeTouched) setClosesDate(raceFecha)
+    if (!closeTouched) {
+      setClosesDD(raceFechaDD)
+      setClosesMM(raceFechaMM)
+      setClosesAA(raceFechaAA)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [raceFecha])
+  }, [raceFechaDD, raceFechaMM, raceFechaAA])
 
   useEffect(() => {
     if (!closeTouched && raceHora.trim()) setClosesTime(raceHora)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raceHora])
+
+  const raceFechaISO = useMemo(() => parseDateParts(raceFechaDD, raceFechaMM, raceFechaAA), [raceFechaDD, raceFechaMM, raceFechaAA])
+  const raceHora24 = useMemo(() => parseTime12hTo24(raceHora), [raceHora])
+  const opensDateISO = useMemo(() => parseDateParts(opensDD, opensMM, opensAA), [opensDD, opensMM, opensAA])
+  const closesDateISO = useMemo(() => parseDateParts(closesDD, closesMM, closesAA), [closesDD, closesMM, closesAA])
+  const opensTime24 = useMemo(() => parseTime12hTo24(opensTime), [opensTime])
+  const closesTime24 = useMemo(() => parseTime12hTo24(closesTime), [closesTime])
 
   // =========================
   // Caballos (horses) - lista dinámica
@@ -202,9 +280,14 @@ export default function AdminCrearRematePage() {
   // Helpers UI
   // =========================
   const canSave = useMemo(() => {
-    if (!raceNombre.trim()) return false
-    if (!raceFecha) return false
-    if (!remateNombre.trim()) return false
+    if (!raceDescripcion.trim()) return false
+    if (!raceHipodromo.trim()) return false
+    if (!raceNumeroCarreraText.trim()) return false
+    if (!raceDia.trim()) return false
+    if (!raceFechaISO) return false
+    if (!raceHora24) return false
+    if (!raceDistancia.trim()) return false
+    if (!(n(raceDistancia) > 0)) return false
 
     const inc = n(incrementoMinimo)
     const min = n(apuestaMinima)
@@ -214,8 +297,8 @@ export default function AdminCrearRematePage() {
     if (!(min > 0)) return false
     if (!(casa >= 0 && casa <= 100)) return false
 
-    const o = buildCaracasTs(opensDate, opensTime)
-    const c = buildCaracasTs(closesDate, closesTime)
+    const o = buildCaracasTs(opensDateISO, opensTime24)
+    const c = buildCaracasTs(closesDateISO, closesTime24)
     if (!o || !c) return false
     if (new Date(o).getTime() >= new Date(c).getTime()) return false
 
@@ -251,16 +334,32 @@ export default function AdminCrearRematePage() {
 
     return true
   }, [
-    raceNombre,
-    raceFecha,
-    remateNombre,
+    raceDescripcion,
+    raceHipodromo,
+    raceNumeroCarreraText,
+    raceDia,
+    raceFechaDD,
+    raceFechaMM,
+    raceFechaAA,
+    raceHora,
+    raceDistancia,
+    raceFechaISO,
+    raceHora24,
     incrementoMinimo,
     apuestaMinima,
     porcentajeCasa,
-    opensDate,
+    opensDD,
+    opensMM,
+    opensAA,
     opensTime,
-    closesDate,
+    closesDD,
+    closesMM,
+    closesAA,
     closesTime,
+    opensDateISO,
+    opensTime24,
+    closesDateISO,
+    closesTime24,
     horses,
     useDefaultRules,
     defaultRules,
@@ -362,16 +461,23 @@ export default function AdminCrearRematePage() {
       if (!aid) return
 
       // 1) Crear Carrera (races)
+      const numeroCarreraText = raceNumeroCarreraText.trim()
+      const numeroCarreraNum =
+        numeroCarreraText && Number.isFinite(Number(numeroCarreraText)) ? Number(numeroCarreraText) : null
+
       const raceInsert: any = {
-        nombre: raceNombre.trim(),
-        fecha: raceFecha,
+        nombre: raceDescripcion.trim(),
+        fecha: raceFechaISO,
         estado: "programada",
+        dia: raceDia.trim(),
+        distancia_m: n(raceDistancia),
+        numero_carrera_text: numeroCarreraText || null,
       }
 
-      // hipodromo / numero_carrera / hora_programada son nullables (según tu schema)
+      // hipodromo / numero_carrera / hora_programada son nullables (seg?n tu schema)
       raceInsert.hipodromo = raceHipodromo.trim() ? raceHipodromo.trim() : null
-      raceInsert.numero_carrera = raceNumeroCarrera.trim() ? Number(raceNumeroCarrera) : null
-      raceInsert.hora_programada = raceHora.trim() ? raceHora.trim() : null
+      raceInsert.numero_carrera = numeroCarreraNum
+      raceInsert.hora_programada = raceHora24 ? raceHora24 : null
 
       const { data: raceData, error: raceErr } = await supabase
         .from("races")
@@ -384,16 +490,22 @@ export default function AdminCrearRematePage() {
       setCreatedRaceId(raceId)
 
       // 2) Crear Remate (remates) para esa carrera
+      const remateNombreInterno =
+        raceDescripcion.trim() ||
+        (raceHipodromo.trim()
+          ? `Remate ${raceHipodromo.trim()}`
+          : `Remate ${numeroCarreraText || ""}`.trim())
+
       const remateInsert: any = {
         race_id: raceId,
-        nombre: remateNombre.trim(),
+        nombre: remateNombreInterno,
         estado: "abierto",
         incremento_minimo: n(incrementoMinimo),
         apuesta_minima: n(apuestaMinima),
         porcentaje_casa: n(porcentajeCasa),
         tipo: remateTipo,
-        opens_at: buildCaracasTs(opensDate, opensTime),
-        closes_at: buildCaracasTs(closesDate, closesTime),
+        opens_at: buildCaracasTs(opensDateISO, opensTime24),
+        closes_at: buildCaracasTs(closesDateISO, closesTime24),
       }
 
       const { data: remateData, error: remErr } = await supabase
@@ -531,76 +643,133 @@ export default function AdminCrearRematePage() {
           <h2 className="text-base font-semibold">1) Carrera</h2>
 
           <div className="mt-3 space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-sm text-zinc-200">País</label>
+                <select
+                  value={racePais}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    setRacePais(next)
+                    if (next !== "Venezuela") {
+                      setRaceHipodromo("")
+                    } else if (!raceHipodromo.trim()) {
+                      setRaceHipodromo("La Rinconada")
+                    }
+                  }}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                >
+                  <option value="Venezuela">Venezuela</option>
+                  <option value="Estados Unidos" disabled>
+                    Estados Unidos (próximamente)
+                  </option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-zinc-200">Hipódromo</label>
+                <select
+                  value={raceHipodromo}
+                  onChange={(e) => setRaceHipodromo(e.target.value)}
+                  disabled={racePais !== "Venezuela"}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                >
+                  <option value="La Rinconada">La Rinconada</option>
+                  <option value="Valencia">Valencia</option>
+                </select>
+              </div>
+            </div>
+
             <div>
-              <label className="text-sm text-zinc-200">Descripcion de la carrera</label>
+              <label className="text-sm text-zinc-200">Descripción de la carrera</label>
               <input
-                value={raceNombre}
-                onChange={(e) => setRaceNombre(e.target.value)}
+                value={raceDescripcion}
+                onChange={(e) => setRaceDescripcion(e.target.value)}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="Ej: La Rinconada - Carrera 1 - Clasico..."
+                placeholder="Ej: Cl?sico Especial de la Tarde"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-sm text-zinc-200">Hipódromo</label>
+                <label className="text-sm text-zinc-200">Día</label>
                 <input
-                  value={raceHipodromo}
-                  onChange={(e) => setRaceHipodromo(e.target.value)}
+                  value={raceDia}
+                  onChange={(e) => setRaceDia(e.target.value)}
                   className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="La Rinconada"
+                  placeholder="Domingo"
                 />
               </div>
               <div>
-                <label className="text-sm text-zinc-200">No. carrera</label>
-                <input
-                  inputMode="numeric"
-                  value={raceNumeroCarrera}
-                  onChange={(e) => setRaceNumeroCarrera(e.target.value)}
-                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="1"
-                />
+                <label className="text-sm text-zinc-200">Fecha (DD/MM/AA)</label>
+                <div className="mt-1 flex items-center gap-1">
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={raceFechaDD}
+                    onChange={(e) => setRaceFechaDD(e.target.value)}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="DD"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={raceFechaMM}
+                    onChange={(e) => setRaceFechaMM(e.target.value)}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="MM"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={raceFechaAA}
+                    onChange={(e) => setRaceFechaAA(e.target.value)}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="AA"
+                  />
+                </div>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-sm text-zinc-200">Fecha</label>
-                <input
-                  type="date"
-                  value={raceFecha}
-                  onChange={(e) => setRaceFecha(e.target.value)}
-                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-zinc-200">Hora (opcional)</label>
+                <label className="text-sm text-zinc-200">Hora</label>
                 <input
                   value={raceHora}
                   onChange={(e) => setRaceHora(e.target.value)}
                   className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="15:00:00"
+                  placeholder="1:30 pm"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-zinc-200">Distancia (m)</label>
+                <input
+                  inputMode="numeric"
+                  value={raceDistancia}
+                  onChange={(e) => setRaceDistancia(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                  placeholder="1600"
                 />
               </div>
             </div>
+
+            <div>
+              <label className="text-sm text-zinc-200">N° carrera (texto)</label>
+              <input
+                value={raceNumeroCarreraText}
+                onChange={(e) => setRaceNumeroCarreraText(e.target.value)}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                placeholder="6 - PRIMERA VÁLIDA"
+              />
+            </div>
           </div>
         </section>
-
         {/* Remate */}
         <section className="mt-3 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <h2 className="text-base font-semibold">2) Remate</h2>
 
           <div className="mt-3 space-y-3">
-            <div>
-              <label className="text-sm text-zinc-200">Nombre</label>
-              <input
-                value={remateNombre}
-                onChange={(e) => setRemateNombre(e.target.value)}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="Remate de Prueba"
-              />
-            </div>
-
             <div className="grid grid-cols-3 gap-2">
               <div>
                 <label className="text-sm text-zinc-200">Apuesta mínima</label>
@@ -609,7 +778,7 @@ export default function AdminCrearRematePage() {
                   value={apuestaMinima}
                   onChange={(e) => setApuestaMinima(e.target.value)}
                   className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="60"
+                  placeholder="40"
                 />
               </div>
               <div>
@@ -652,12 +821,34 @@ export default function AdminCrearRematePage() {
               </div>
               <div>
                 <label className="text-sm text-zinc-200">Apertura (fecha)</label>
-                <input
-                  type="date"
-                  value={opensDate}
-                  onChange={(e) => setOpensDate(e.target.value)}
-                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                />
+                <div className="mt-1 flex items-center gap-1">
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={opensDD}
+                    onChange={(e) => setOpensDD(e.target.value)}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="DD"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={opensMM}
+                    onChange={(e) => setOpensMM(e.target.value)}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="MM"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={opensAA}
+                    onChange={(e) => setOpensAA(e.target.value)}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="AA"
+                  />
+                </div>
               </div>
             </div>
 
@@ -668,20 +859,48 @@ export default function AdminCrearRematePage() {
                   value={opensTime}
                   onChange={(e) => setOpensTime(e.target.value)}
                   className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="07:00:00"
+                  placeholder="10:30 am"
                 />
               </div>
               <div>
                 <label className="text-sm text-zinc-200">Cierre (fecha)</label>
-                <input
-                  type="date"
-                  value={closesDate}
-                  onChange={(e) => {
-                    setCloseTouched(true)
-                    setClosesDate(e.target.value)
-                  }}
-                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                />
+                <div className="mt-1 flex items-center gap-1">
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={closesDD}
+                    onChange={(e) => {
+                      setClosesDD(e.target.value)
+                      setCloseTouched(true)
+                    }}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="DD"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={closesMM}
+                    onChange={(e) => {
+                      setClosesMM(e.target.value)
+                      setCloseTouched(true)
+                    }}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="MM"
+                  />
+                  <span className="text-zinc-500">/</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={closesAA}
+                    onChange={(e) => {
+                      setClosesAA(e.target.value)
+                      setCloseTouched(true)
+                    }}
+                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
+                    placeholder="AA"
+                  />
+                </div>
               </div>
             </div>
 
@@ -690,22 +909,18 @@ export default function AdminCrearRematePage() {
               <input
                 value={closesTime}
                 onChange={(e) => {
-                  setCloseTouched(true)
                   setClosesTime(e.target.value)
+                  setCloseTouched(true)
                 }}
                 className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="19:00:00"
+                placeholder="7:00 pm"
               />
-              <p className="mt-1 text-xs text-zinc-400">
-                Horario Venezuela (America/Caracas).
-              </p>
             </div>
           </div>
         </section>
-
         {/* Reglas default */}
         <section className="mt-3 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h2 className="text-base font-semibold">3) Reglas default</h2>
             <label className="text-xs text-zinc-300 flex items-center gap-2">
               <input
@@ -717,53 +932,60 @@ export default function AdminCrearRematePage() {
             </label>
           </div>
 
-          <p className="mt-2 text-xs text-zinc-400">
-            Estas reglas aplican a caballos que no tengan reglas propias. Se usan rangos: min inclusive, max exclusivo.
-          </p>
+          {!useDefaultRules ? (
+            <div className="mt-2 text-xs text-zinc-400">Sin reglas default. Cada caballo debe tener reglas propias.</div>
+          ) : (
+            <>
+              <div className="mt-3 grid grid-cols-4 gap-2 text-xs text-zinc-500">
+                <div>Desde</div>
+                <div>Hasta (opcional)</div>
+                <div>Incremento</div>
+                <div>Acción</div>
+              </div>
 
-          {useDefaultRules ? (
-            <div className="mt-3 space-y-2">
-              {defaultRules.map((r) => (
-                <div key={r.tempId} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
-                  <input
-                    inputMode="decimal"
-                    value={r.min_precio}
-                    onChange={(e) => updateRule(setDefaultRules, r.tempId, { min_precio: e.target.value })}
-                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
-                    placeholder="Min"
-                  />
-                  <input
-                    inputMode="decimal"
-                    value={r.max_precio}
-                    onChange={(e) => updateRule(setDefaultRules, r.tempId, { max_precio: e.target.value })}
-                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
-                    placeholder="Max (opcional)"
-                  />
-                  <input
-                    inputMode="decimal"
-                    value={r.incremento}
-                    onChange={(e) => updateRule(setDefaultRules, r.tempId, { incremento: e.target.value })}
-                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
-                    placeholder="Incremento"
-                  />
-                  <button
-                    onClick={() => removeRule(setDefaultRules, r.tempId)}
-                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
-                  >
-                    Quitar
-                  </button>
-                </div>
-              ))}
+              <div className="mt-2 space-y-2">
+                {defaultRules.map((r) => (
+                  <div key={r.tempId} className="grid grid-cols-4 gap-2">
+                    <input
+                      inputMode="decimal"
+                      value={r.min_precio}
+                      onChange={(e) => updateRule(setDefaultRules, r.tempId, { min_precio: e.target.value })}
+                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                      placeholder="Min"
+                    />
+                    <input
+                      inputMode="decimal"
+                      value={r.max_precio}
+                      onChange={(e) => updateRule(setDefaultRules, r.tempId, { max_precio: e.target.value })}
+                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                      placeholder="Max"
+                    />
+                    <input
+                      inputMode="decimal"
+                      value={r.incremento}
+                      onChange={(e) => updateRule(setDefaultRules, r.tempId, { incremento: e.target.value })}
+                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                      placeholder="Incremento"
+                    />
+                    <button
+                      onClick={() => removeRule(setDefaultRules, r.tempId)}
+                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                    >
+                      Quitar
+                    </button>
+                  </div>
+                ))}
+              </div>
+
               <button
                 onClick={() => addRule(setDefaultRules)}
-                className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                className="mt-3 rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
               >
                 + Agregar rango
               </button>
-            </div>
-          ) : null}
+            </>
+          )}
         </section>
-
         {/* Caballos */}
         <section className="mt-3 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <div className="flex items-center justify-between">
@@ -862,6 +1084,12 @@ export default function AdminCrearRematePage() {
 
                   {horseRulesEnabled[h.tempId] ? (
                     <div className="mt-3 space-y-2">
+                      <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 text-[11px] text-zinc-500">
+                        <div>Desde</div>
+                        <div>Hasta</div>
+                        <div>Incremento</div>
+                        <div>Acción</div>
+                      </div>
                       {(horseRulesByTempId[h.tempId] || []).map((r) => (
                         <div key={r.tempId} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
                           <input

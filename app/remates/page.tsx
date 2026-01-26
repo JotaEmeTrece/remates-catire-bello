@@ -25,6 +25,9 @@ type RaceRow = {
   nombre: string
   hipodromo: string | null
   numero_carrera: number | null
+  numero_carrera_text?: string | null
+  dia?: string | null
+  distancia_m?: string | number | null
   fecha: string
   hora_programada: string | null
   estado: string
@@ -36,6 +39,25 @@ function badgeClass(estado: string) {
   if (e.includes("cerr")) return "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/25"
   if (e.includes("liq") || e.includes("liquid")) return "bg-sky-500/15 text-sky-200 ring-1 ring-sky-500/25"
   return "bg-zinc-500/15 text-zinc-200 ring-1 ring-zinc-500/25"
+}
+
+function formatDateShort(iso: string | null | undefined) {
+  if (!iso) return ""
+  const parts = iso.split("-")
+  if (parts.length !== 3) return iso
+  return `${parts[2]}/${parts[1]}/${parts[0].slice(-2)}`
+}
+
+function formatTime12hFrom24(time24: string | null | undefined) {
+  if (!time24) return ""
+  const parts = time24.split(":")
+  if (parts.length < 2) return ""
+  const h24 = Number(parts[0])
+  const m = parts[1]
+  if (!Number.isFinite(h24)) return ""
+  const isPm = h24 >= 12
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+  return `${h12}:${m} ${isPm ? "pm" : "am"}`
 }
 
 export default function RematesPage() {
@@ -100,7 +122,7 @@ export default function RematesPage() {
       if (raceIds.length > 0) {
         const { data: races, error: racesErr } = await supabase
           .from("races")
-          .select("id,nombre,hipodromo,numero_carrera,fecha,hora_programada,estado")
+          .select("id,nombre,hipodromo,numero_carrera,numero_carrera_text,dia,distancia_m,fecha,hora_programada,estado")
           .in("id", raceIds)
 
         if (racesErr) {
@@ -194,14 +216,20 @@ export default function RematesPage() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-base font-semibold">{r.nombre}</div>
+                      <div className="text-base font-semibold">{race?.nombre || "Carrera"}</div>
                       <div className="mt-1 text-xs text-zinc-400">
                         {race ? (
                           <>
                             {race.hipodromo ? `${race.hipodromo} - ` : ""}
-                            {race.numero_carrera != null ? `Carrera ${race.numero_carrera} - ` : ""}
-                            {race.fecha}
-                            {race.hora_programada ? ` ${race.hora_programada}` : ""}
+                            {race.dia ? `${race.dia} - ` : ""}
+                            {formatDateShort(race.fecha)}
+                            {race.hora_programada ? ` ${formatTime12hFrom24(race.hora_programada)}` : ""}
+                            {race.numero_carrera_text
+                              ? ` - ${race.numero_carrera_text}`
+                              : race.numero_carrera != null
+                              ? ` - Carrera ${race.numero_carrera}`
+                              : ""}
+                            {race.distancia_m ? ` - ${race.distancia_m} m` : ""}
                           </>
                         ) : (
                           "-"
