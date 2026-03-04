@@ -1,53 +1,112 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🐴 Remate Catire Bello
 
-## Getting Started
+Plataforma web completa para la gestión de remates de caballos de carrera, con sistema de pujas en tiempo real, wallet integrada y panel de administración.
 
-First, run the development server:
+## ✨ Funcionalidades
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+### Cliente
+- Visualización de remates activos sin necesidad de registro
+- Registro con username, teléfono y correo
+- Wallet personal con saldo **disponible** y **bloqueado**
+- Recarga de saldo con aprobación manual del admin
+- Retiro de saldo con procesamiento manual
+- Puja automática ("Ponerle") y puja manual por monto
+- Historial de recargas, retiros y movimientos
+
+### Administrador
+- Creación de remates con datos de carrera (hipódromo, número, fecha y hora)
+- Configuración de caballos con precio de salida, jinete y reglas de precios
+- Reglas de precios por rangos (incrementos automáticos según precio actual)
+- Soporte para reglas default y reglas propias por caballo
+- Cierre de remates (detiene pujas y libera saldos bloqueados)
+- Liquidación de remates con selección de caballo ganador y reparto automático del pozo
+- Gestión de recargas y retiros pendientes con notificación por email al aprobar
+- Panel de contabilidad con totales por período: recargas, retiros y ganancias de la casa
+
+### Superadmin
+- Control total del sistema incluyendo gestión de usuarios y roles
+
+## 💡 Lógica de negocio
+
+- Cada caballo tiene un precio que sube con cada puja según rangos configurables
+- Al liquidar, el ganador recibe el pozo acumulado menos el **25% de la casa**
+- Si el caballo ganador queda para la casa (sin pujas), la casa se queda con todo
+- El saldo se bloquea mientras el usuario lidera una puja y se libera al cerrar el remate si no ganó
+
+## 🛠️ Tech Stack
+
+| Capa | Tecnología |
+|------|-----------|
+| Frontend | Next.js 15, TypeScript, Tailwind CSS |
+| Backend | Supabase (PostgreSQL + Auth + RLS + RPC) |
+| Email | Gmail SMTP (notificaciones de recargas) |
+| Despliegue | Vercel (frontend) + Supabase (base de datos) |
+
+## 📁 Estructura del proyecto
+
+```
+remates-catire-bello/
+├── app/
+│   ├── remates/          # Vista pública de remates activos
+│   ├── login/            # Autenticación
+│   ├── register/         # Registro de usuarios
+│   ├── dashboard/        # Panel del cliente (wallet, recargas, retiros)
+│   └── admin/            # Panel de administración completo
+├── lib/                  # Utilidades y cliente Supabase
+├── sql/                  # Scripts SQL (tablas, RLS, RPCs)
+├── middleware.ts          # Protección de rutas por rol
+└── public/               # Assets estáticos
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 🚀 Correr localmente
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Prerrequisitos
+- Node.js 18+
+- pnpm
+- Cuenta en Supabase
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Email Notifications (Gmail SMTP)
-
-To send an email notification whenever an admin approves/rejects a deposit (`/admin/recargas`), add this to `.env.local`:
+### Instalación
 
 ```bash
+git clone https://github.com/JotaEmeTrece/remates-catire-bello.git
+cd remates-catire-bello
+pnpm install
+```
+
+### Variables de entorno
+
+Crea un archivo `.env.local` en la raíz:
+
+```env
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+
+# Email (Gmail SMTP)
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=465
-SMTP_USER=rematecbsa@gmail.com
-SMTP_PASS=GMAIL_APP_PASSWORD
-NOTIFY_EMAIL_TO=rematecbsa@gmail.com
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_gmail_app_password
+NOTIFY_EMAIL_TO=your_email@gmail.com
 
-# Optional: used to generate an absolute URL in the email.
+# App
 APP_URL=http://localhost:3000
 ```
 
-`SMTP_PASS` must be a Google "App Password" (requires 2-step verification enabled on that account).
+> `SMTP_PASS` debe ser una contraseña de aplicación de Google (requiere verificación en dos pasos).
 
-## Learn More
+### Base de datos
 
-To learn more about Next.js, take a look at the following resources:
+Ejecuta los scripts de la carpeta `/sql` en tu proyecto de Supabase para crear las tablas, políticas RLS y funciones RPC necesarias.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Ejecutar
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+pnpm dev
+```
 
-## Deploy on Vercel
+## 📄 Licencia
+MIT — Desarrollado por Jercol Technologies © 2025
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT — Desarrollado por **Jercol Technologies** © 2026e details.
