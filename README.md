@@ -109,4 +109,4 @@ pnpm dev
 ## 📄 Licencia
 MIT — Desarrollado por Jercol Technologies © 2025
 
-MIT — Desarrollado por **Jercol Technologies** © 2026e details.
+
