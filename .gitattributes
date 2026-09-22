@@ -1,0 +1,13 @@
+# Normaliza finales de linea. Sin esto, trabajar en Windows marca decenas de
+# archivos como modificados sin que haya cambiado una sola linea de codigo.
+* text=auto eol=lf
+
+# Binarios: no tocar
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary

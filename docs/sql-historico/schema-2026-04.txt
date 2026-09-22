@@ -1,0 +1,205 @@
+## Table `admin_actions`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `admin_id` | `uuid` |  |
+| `action` | `text` |  |
+| `target_table` | `text` |  |
+| `target_id` | `text` |  |
+| `details` | `jsonb` |  Nullable |
+| `success` | `bool` |  |
+| `error` | `text` |  Nullable |
+| `created_at` | `timestamptz` |  |
+
+## Table `bids`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `remate_id` | `uuid` |  |
+| `horse_id` | `uuid` |  |
+| `user_id` | `uuid` |  |
+| `monto` | `numeric` |  |
+| `created_at` | `timestamptz` |  Nullable |
+
+## Table `deposit_requests`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `user_id` | `uuid` |  |
+| `monto` | `numeric` |  |
+| `metodo` | `text` |  |
+| `telefono_pago` | `text` |  |
+| `referencia` | `text` |  |
+| `fecha_pago` | `date` |  |
+| `estado` | `deposit_status` |  |
+| `created_at` | `timestamptz` |  Nullable |
+| `approved_at` | `timestamptz` |  Nullable |
+| `approved_by` | `uuid` |  Nullable |
+
+## Table `horses`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `race_id` | `uuid` |  |
+| `numero` | `int4` |  |
+| `nombre` | `text` |  |
+| `jinete` | `text` |  Nullable |
+| `entrenador` | `text` |  Nullable |
+| `comentarios` | `text` |  Nullable |
+| `created_at` | `timestamptz` |  Nullable |
+| `precio_salida` | `numeric` |  |
+| `retirado` | `bool` |  Nullable |
+
+## Table `profiles`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `username` | `text` |  Nullable Unique |
+| `telefono` | `text` |  Nullable |
+| `pais` | `text` |  Nullable |
+| `es_admin` | `bool` |  Nullable |
+| `created_at` | `timestamptz` |  Nullable |
+| `es_super_admin` | `bool` |  |
+
+## Table `race_results`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `race_id` | `uuid` |  |
+| `ganador_horse_id` | `uuid` |  |
+| `created_at` | `timestamptz` |  Nullable |
+
+## Table `races`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `nombre` | `text` |  |
+| `hipodromo` | `text` |  Nullable |
+| `numero_carrera` | `int4` |  Nullable |
+| `fecha` | `date` |  |
+| `hora_programada` | `time` |  Nullable |
+| `estado` | `race_status` |  |
+| `created_at` | `timestamptz` |  Nullable |
+| `dia` | `text` |  Nullable |
+| `numero_carrera_text` | `text` |  Nullable |
+| `distancia_m` | `numeric` |  Nullable |
+
+## Table `remate_price_rules`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `remate_id` | `uuid` |  |
+| `min_precio` | `numeric` |  |
+| `max_precio` | `numeric` |  Nullable |
+| `incremento` | `numeric` |  |
+| `created_at` | `timestamptz` |  Nullable |
+| `horse_id` | `uuid` |  Nullable |
+
+## Table `remates`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `race_id` | `uuid` |  |
+| `nombre` | `text` |  |
+| `estado` | `remate_status` |  |
+| `incremento_minimo` | `numeric` |  |
+| `apuesta_minima` | `numeric` |  |
+| `porcentaje_casa` | `numeric` |  |
+| `created_at` | `timestamptz` |  Nullable |
+| `closed_at` | `timestamptz` |  Nullable |
+| `cancelled_at` | `timestamptz` |  Nullable |
+| `cancelled_by` | `uuid` |  Nullable |
+| `cancelled_reason` | `text` |  Nullable |
+| `archived_at` | `timestamptz` |  Nullable |
+| `archived_by` | `uuid` |  Nullable |
+| `archived_reason` | `text` |  Nullable |
+| `opens_at` | `timestamptz` |  Nullable |
+| `closes_at` | `timestamptz` |  Nullable |
+| `tipo` | `text` |  Nullable |
+
+## Table `support_settings`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `label` | `text` |  |
+| `value` | `text` |  |
+| `type` | `text` |  |
+| `href` | `text` |  Nullable |
+| `is_active` | `bool` |  |
+| `sort_order` | `int4` |  |
+| `created_at` | `timestamptz` |  |
+| `updated_at` | `timestamptz` |  |
+
+## Table `wallet_movements`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `wallet_id` | `uuid` |  |
+| `tipo` | `wallet_movement_type` |  |
+| `monto` | `numeric` |  |
+| `descripcion` | `text` |  Nullable |
+| `ref_externa` | `text` |  Nullable |
+| `created_at` | `timestamptz` |  Nullable |
+
+## Table `wallets`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `user_id` | `uuid` |  Unique |
+| `saldo_disponible` | `numeric` |  |
+| `saldo_bloqueado` | `numeric` |  |
+| `created_at` | `timestamptz` |  Nullable |
+
+## Table `withdraw_requests`
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary |
+| `user_id` | `uuid` |  |
+| `monto` | `numeric` |  |
+| `metodo` | `text` |  |
+| `telefono_destino` | `text` |  |
+| `comentario` | `text` |  Nullable |
+| `estado` | `withdraw_status` |  |
+| `created_at` | `timestamptz` |  Nullable |
+| `processed_at` | `timestamptz` |  Nullable |
+| `processed_by` | `uuid` |  Nullable |
+

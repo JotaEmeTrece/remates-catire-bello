@@ -22,8 +22,10 @@ node_modules
 
 # misc
 .DS_Store
+Desktop.ini
 public/Desktop.ini
 *.pem
+rollback_hardening_profiles.sql
 
 # debug
 npm-debug.log*
@@ -40,3 +42,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# volcado de 11MB, no va al repo
+estructura.txt
+
+# Supabase CLI: estado local de la maquina (project-ref, pooler-url, versiones).
+# No va al repo: es por-maquina y por-cliente, y cambia con cada comando del CLI.
+supabase/.temp/
+supabase/.branches/
