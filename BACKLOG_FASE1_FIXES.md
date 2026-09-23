@@ -107,6 +107,42 @@ El orden **importa**. Las dependencias están marcadas. No saltarse el bloque 0:
 
 ## Bloque 1 — Fixes de cálculo
 
+### 1.0 · El sobrepuje está roto en producción — 🔴 **CRÍTICO · ENCONTRADO Y CORREGIDO 22/09/2026**
+
+**Descubierto al correr el arnés de pruebas contra el baseline.**
+
+`hacer_puja` y `cerrar_remate` insertan un movimiento de tipo `'apuesta_desbloqueo'`, pero ese valor **no existe** en el enum `public.wallet_movement_type`, que tiene `'apuesta_liberacion'`:
+
+```
+recarga · apuesta_bloqueo · apuesta_liberacion · premio · ajuste_manual · retiro
+```
+
+**Qué provoca:** la **primera** puja de cada caballo funciona, porque no hay líder previo a quien devolverle nada. La **segunda** —el sobrepuje— entra en la rama que libera al líder anterior, choca con el enum, y **la transacción entera se revierte**:
+
+```
+ERROR: invalid input value for enum wallet_movement_type: "apuesta_desbloqueo"
+```
+
+> **Nadie ha podido sobrepujar nunca. Cada caballo admite exactamente una puja y ahí se congela.** La mecánica central del remate no funciona.
+
+**Esto explica los datos de prueba:** 300 Bs de participación de usuarios repartidos en 40 remates. No era falta de uso — era que el segundo que intentaba pujar recibía un error y se iba.
+
+**Y explica por qué el defecto de `cerrar_remate` (1.8) nunca se manifestó:** su bucle solo libera cuando alguien fue superado, y superar era imposible.
+
+**La corrección** (`supabase/migrations/20260922120000_fix_enum_apuesta_desbloqueo.sql`):
+
+```sql
+alter type public.wallet_movement_type add value if not exists 'apuesta_desbloqueo';
+```
+
+Se agrega el valor al enum en vez de reescribir las dos funciones: es una línea, sin riesgo de transcripción, y los tipos de movimiento se rehacen completos en el bloque 2 (tarea 2.8).
+
+**Verificado:** aplicada sobre el baseline, el sobrepuje funciona y al líder anterior se le devuelve su monto completo.
+
+---
+
+## Bloque 1 (resto) — Fixes de cálculo
+
 > Depende de: bloque 0 completo. Cambios acotados, sin tocar el modelo de saldo.
 
 ### 1.1 · El caballo retirado sale del pozo
