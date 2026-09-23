@@ -171,7 +171,9 @@ export default function AdminCrearRematePage() {
   // Form Remate (remates)
   // =========================
   const [incrementoMinimo, setIncrementoMinimo] = useState("20")
-  const [apuestaMinima, setApuestaMinima] = useState("40")
+  // Solo vive en el formulario: precarga el precio de salida de cada caballo.
+  // NO se guarda en la base. Esa columna quedo sin uso en la tarea 2.17.
+  const [salidaPorDefecto, setSalidaPorDefecto] = useState("40")
   const [porcentajeCasa, setPorcentajeCasa] = useState("25")
   const [remateTipo, setRemateTipo] = useState<"vivo" | "adelantado">("vivo")
   const [opensDD, setOpensDD] = useState(nowCaracas.dd)
@@ -290,11 +292,9 @@ export default function AdminCrearRematePage() {
     if (!(n(raceDistancia) > 0)) return false
 
     const inc = n(incrementoMinimo)
-    const min = n(apuestaMinima)
     const casa = n(porcentajeCasa)
 
     if (!(inc > 0)) return false
-    if (!(min > 0)) return false
     if (!(casa >= 0 && casa <= 100)) return false
 
     const o = buildCaracasTs(opensDateISO, opensTime24)
@@ -346,7 +346,7 @@ export default function AdminCrearRematePage() {
     raceFechaISO,
     raceHora24,
     incrementoMinimo,
-    apuestaMinima,
+    salidaPorDefecto,
     porcentajeCasa,
     opensDD,
     opensMM,
@@ -374,7 +374,7 @@ export default function AdminCrearRematePage() {
         : "1"
     setHorses((prev) => [
       ...prev,
-      { tempId: uid(), numero: nextNum, nombre: "", jinete: "", comentarios: "", precio_salida: apuestaMinima || "" },
+      { tempId: uid(), numero: nextNum, nombre: "", jinete: "", comentarios: "", precio_salida: salidaPorDefecto || "" },
     ])
   }
 
@@ -501,7 +501,6 @@ export default function AdminCrearRematePage() {
         nombre: remateNombreInterno,
         estado: "abierto",
         incremento_minimo: n(incrementoMinimo),
-        apuesta_minima: n(apuestaMinima),
         porcentaje_casa: n(porcentajeCasa),
         tipo: remateTipo,
         opens_at: buildCaracasTs(opensDateISO, opensTime24),
@@ -772,11 +771,11 @@ export default function AdminCrearRematePage() {
           <div className="mt-3 space-y-3">
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="text-sm text-zinc-200">Apuesta mínima</label>
+                <label className="text-sm text-zinc-200">Salida por defecto</label>
                 <input
                   inputMode="decimal"
-                  value={apuestaMinima}
-                  onChange={(e) => setApuestaMinima(e.target.value)}
+                  value={salidaPorDefecto}
+                  onChange={(e) => setSalidaPorDefecto(e.target.value)}
                   className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
                   placeholder="40"
                 />
@@ -1053,7 +1052,7 @@ export default function AdminCrearRematePage() {
                       value={h.precio_salida}
                       onChange={(e) => updateHorse(h.tempId, { precio_salida: e.target.value })}
                       className="mt-1 w-full rounded-xl bg-zinc-900/40 border border-zinc-800 px-3 py-2 text-sm"
-                      placeholder={apuestaMinima || "60"}
+                      placeholder={salidaPorDefecto || "60"}
                     />
                   </div>
                   <div>

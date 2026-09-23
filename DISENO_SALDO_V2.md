@@ -496,6 +496,100 @@ Los tres números se muestran al usuario por separado. Que vea *"tienes 1.450, 4
 
 ---
 
+## 7quater. Contabilidad de la casa — **DECIDIDO 23/09/2026, va en el bloque 2**
+
+### El problema
+
+Hoy `dinero_casa` es **un solo número calculado por resta**:
+
+```
+dinero_casa = recargas_aprobadas - retiros_pagados - saldo_usuarios - retiros_pendientes
+```
+
+La cuenta es correcta: los depósitos entran como activo y salen como pasivo, así que **no se cuentan como ganancia**. Lo que queda es patrimonio, y ese patrimonio es exactamente el 25% acumulado más los pozos ganados por caballos de la casa.
+
+**Pero la casa no tiene libro.** Verificado en el baseline:
+
+- Cero tablas de la casa.
+- `liquidar_remate` hace dos `insert` en `wallet_movements`, y **los dos van a wallets de usuarios**.
+- **El 25% de la casa no se registra en ninguna parte.**
+
+Consecuencia: si `dinero_casa` da 3.400 Bs, no hay forma de saber si son comisiones legítimas, un ajuste manual, o un defecto. Es un número sin contraparte.
+
+### La decisión: dos caminos al mismo número
+
+> **Patrimonio** se calcula **por resta** (caja menos comprometido).
+> **Ganancia acumulada** se calcula **por suma** (el libro de la casa).
+> **Los dos deben dar idéntico.** Si difieren, hay un error, y el libro dice en qué remate empezó.
+
+Hoy solo existe el primer camino.
+
+### Tabla nueva: `house_ledger`
+
+```sql
+create type public.house_entry as enum (
+  'comision_remate',              -- (+) el porcentaje de la casa al liquidar
+  'pozo_ganado',                  -- (+) gano un caballo que quedo a la casa
+  'aporte_caballos_no_vendidos',  -- (-) lo que la casa banca en ese remate
+  'ajuste_manual'                 -- (+/-) con motivo obligatorio
+);
+
+create table public.house_ledger (
+  id         uuid primary key default gen_random_uuid(),
+  tipo       public.house_entry not null,
+  monto      numeric not null,
+  remate_id  uuid references public.remates(id) on delete restrict,
+  motivo     text,
+  creado_por uuid,
+  created_at timestamptz not null default now()
+);
+```
+
+`liquidar_remate` emite sus asientos en el mismo momento en que calcula esos montos. Por eso esta tarea va en el bloque 2 y no antes: hacerla aparte obligaría a tocar la función dos veces.
+
+### Cómo se presenta al operador — **esto NO es cosmético**
+
+Observación de Jota: llamar "lo que se les debe" a la suma de saldos y retiros pendientes **hace que un operador poco atento crea que le falta plata**. El pasivo con usuarios es normal: nace con cada depósito y está cubierto por la caja.
+
+La presentación tiene que dejar ver la cobertura, no la deuda:
+
+```
+DINERO EN LA CUENTA
+  Recargas aprobadas                    + 12.400
+  Retiros ya pagados                    -  3.200
+  ----------------------------------------------
+  CAJA                                    9.200
+
+DE ESA CAJA, ESTA COMPROMETIDO
+  Saldo de los usuarios                    5.800    pueden usarlo o retirarlo
+  Retiros por pagar                        1.400    aprobados, falta transferir
+  ----------------------------------------------
+  COMPROMETIDO                             7.200
+
+PATRIMONIO DE LA CASA                      2.000    esto si es suyo
+Ganancia acumulada (libro)                 2.000    debe coincidir
+```
+
+Reglas de presentación:
+
+1. **La caja va primero.** El operador ve que hay dinero antes de ver qué parte está comprometida.
+2. **"Comprometido", no "deuda" ni "lo que se les debe".** Cada línea con su explicación al lado.
+3. **Patrimonio y ganancia acumulada se muestran juntos.** Coinciden o hay un problema.
+
+### La alarma que hoy no existe
+
+**Si `comprometido > caja`, eso sí significa que falta plata.** Es la única condición que de verdad es una emergencia, y hoy no hay ninguna señal para ella.
+
+```sql
+-- cobertura = caja / comprometido
+--   >= 1  normal
+--    < 1  ALARMA: la casa no puede cubrir lo que debe
+```
+
+Debe ir en rojo en el panel y disparar un aviso. Es el indicador que le dice al operador —o al licenciatario— que algo se rompió, antes de que un usuario intente retirar y el pago rebote.
+
+---
+
 ## 8. Índices necesarios
 
 El compromiso se calcula en **cada puja**, así que la consulta tiene que volar:

@@ -50,3 +50,8 @@ estructura.txt
 # No va al repo: es por-maquina y por-cliente, y cambia con cada comando del CLI.
 supabase/.temp/
 supabase/.branches/
+
+# Respaldos de la base. NUNCA deben entrar al repo: llevan datos de produccion.
+respaldo_*.sql
+backup_*.sql
+*.dump

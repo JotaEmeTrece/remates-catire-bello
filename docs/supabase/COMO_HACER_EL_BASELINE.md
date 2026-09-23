@@ -95,6 +95,7 @@ Pásame el archivo (o los primeros 200 renglones) y yo confirmo que trae:
 - [ ] Los 5 tipos enum (`deposit_status`, `withdraw_status`, `remate_status`,
       `race_status`, `wallet_movement_type`)
 - [ ] El trigger **`enforce_admin_immutability`** sobre `profiles` ← el que no está en el repo
+- [ ] **Ningún objeto del esquema `auth`** — si aparece `CREATE TYPE "auth".` el volcado se hizo mal
 - [ ] El `revoke` de UPDATE sobre `profiles` para `authenticated`
 - [ ] **Ausencia** de la política `bids_select_auth` con `using(true)`
 - [ ] El constraint `unique(race_id, numero)` en `horses`

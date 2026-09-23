@@ -79,17 +79,37 @@ El orden **importa**. Las dependencias están marcadas. No saltarse el bloque 0:
 
 **Por qué:** los bloques 1 y 2 modifican la liquidación y el manejo de saldo. **Sin una prueba que reproduzca el error primero, cada corrección es una apuesta.**
 
-**Casos mínimos iniciales** (los del bloque 2 se agregan en su momento):
+**Implementado:** `tests/pruebas_dinero.sql`. Script SQL de aserciones, sin dependencias. Corre completo aunque una prueba falle y al final imprime la tabla de resultados.
 
-| # | Escenario | Esperado |
+| # | Escenario | Estado al 23/09 |
 |---|---|---|
-| P1 | Liquidar con un caballo retirado que tenía puja | El retirado no entra al pozo |
-| P2 | Liquidar con `porcentaje_casa = 30` | Premio = 70% del pozo |
-| P3 | Liquidar cuando el ganador no tuvo puja | Premio 0, casa se queda el pozo |
-| P4 | Liquidar con premio mayor que la caja | Falla con excepción, no acredita |
-| P5 | Suma de `wallet_movements` de una wallet vs su `saldo_disponible` | Cuadran al céntimo |
+| P1 | Liquidar con un caballo retirado que tenía puja | 🔴 rojo — tarea 1.1 |
+| P2 | Liquidar con `porcentaje_casa = 30` | 🔴 rojo — tarea 1.2 |
+| P3 | Gana un caballo de la casa: no se paga premio | ✅ verde |
+| P4 | Liquidar con premio mayor que la caja | 🔴 rojo — tarea 1.3 |
+| P5 | Usuario superado: cerrar y liquidar sin error | ✅ verde (1.8) |
+| P6 | El libro de movimientos reconstruye los saldos | ✅ verde — ver **2.19** |
+| P7 | Borrar un caballo con pujas → rechazado por la base | ✅ verde (3.1) |
+| P8 | Borrar una carrera con remates → rechazado | ✅ verde (3.1) |
+| P9 | Los retiros pendientes se restan del dinero de la casa | ✅ verde (1.4) |
+| P10 | Aprobar dos veces la misma recarga no duplica saldo | ✅ verde (1.7) |
+| P11 | El cron y el botón dejan el remate en el mismo estado | ✅ verde (1.9) |
+| P12 | El cron puede auditar sus propios fallos | ✅ verde (1.9) |
+| P13 | La regla del caballo le gana a la del remate (2ª puja) | ✅ verde (1.10) |
+| P14 | La primera puja compra al precio de salida | ✅ verde (2.17) |
+| P15 | Sin piso `apuesta_minima`, manual desde el automático | ✅ verde (2.17) |
 
-**Aceptación:** las 5 corren en verde contra staging con el baseline aplicado. P1, P2 y P4 deben fallar **antes** de aplicar el bloque 1 — si pasan de entrada, la prueba está mal escrita.
+**Marcador: 12 verdes / 3 rojas de 15.** Los tres rojos son 1.1, 1.2 y 1.3, absorbidos por el bloque 2.
+
+**Cómo correrlo** (con Docker levantado):
+
+```powershell
+npx supabase db reset
+$db = docker ps --filter "name=supabase_db" --format "{{.Names}}"
+Get-Content tests/pruebas_dinero.sql | docker exec -i $db psql -U postgres -d postgres
+```
+
+**Regla de oro del arnés:** una prueba que pasa de entrada, antes de aplicar la corrección, **no está probando nada**. Pasó con P11: la primera versión era verde contra el código roto porque el escenario tenía un solo pujador y el bucle defectuoso nunca se disparaba. Hubo que reescribirla con un usuario superado.
 
 ---
 
@@ -238,7 +258,7 @@ v_dinero_casa := v_recargas_aprobadas - v_retiros_pagados - v_saldo_usuarios - v
 
 ---
 
-### 1.8 · Quitar el bucle de liberación de `cerrar_remate` — **URGENTE**
+### 1.8 · Quitar el bucle de liberación de `cerrar_remate` — ✅ **HECHO Y VERIFICADO (23/09/2026)**
 
 **Dónde:** `cerrar_remate` desplegada (no la del repo, que es distinta).
 
@@ -250,9 +270,11 @@ Bajo el modelo de bloqueo actual, lo bloqueado al cerrar **ya es** exactamente l
 
 **Aceptación:** remate con U1 superado en un caballo y líder en otro → cierra sin mover saldos, y liquida sin error.
 
+**Resuelto en** `supabase/migrations/20260923120000_cierre_unificado.sql`. `cerrar_remate` pasó de 108 a 31 líneas: valida rol y delega en `_cerrar_remate_interno`. Verificado contra PostgreSQL real: la prueba **P5** pasa de `Inconsistencia: bloqueado (200) < a cobrar (400)` a verde, con el bloqueado de juan intacto en 400.
+
 ---
 
-### 1.9 · Unificar el cierre: el cron y el botón deben hacer lo mismo — **CONFIRMADO 22/09 · BLOQUEANTE DEL BLOQUE 2**
+### 1.9 · Unificar el cierre: el cron y el botón deben hacer lo mismo — ✅ **HECHO Y VERIFICADO (23/09/2026)**
 
 **Verificado:** `auto_cerrar_remates()` hace un `UPDATE` plano y **no** llama a `cerrar_remate`. `llama_a_cerrar_remate = false`, `toca_saldos = false`.
 
@@ -289,6 +311,53 @@ $function$;
 
 **Aceptación:** un remate cerrado por cron y otro por botón quedan en estado idéntico, con los mismos movimientos de wallet. Un remate que falle al cerrar queda registrado en `admin_actions` y no impide que los demás del lote cierren.
 
+**Resuelto en la misma migración.** Verificado: la prueba **P11** (dos remates idénticos, uno cerrado por botón y otro por cron) pasa de `boton: cerrado con 1 mov | cron: cerrado con 0 mov` a `0 mov` en ambos.
+
+**Corrección extra encontrada al probar el manejador de errores.** El bloque `exception` del cron llama a `log_admin_action` con `admin_id = null`, porque el cron corre sin usuario. Pero `admin_actions.admin_id` era `NOT NULL` **y** `log_admin_action` se traga sus propias excepciones. Comprobado en la base: `log_admin_action(null, ...)` devuelve sin error e inserta **0 filas**. Es decir, el manejador de errores del cron no habría dejado rastro de nada.
+
+La migración hace tres cosas por esto:
+
+1. `admin_id` pasa a ser nullable, con `comment` que fija el significado: **NULL = lo hizo el sistema**.
+2. `log_admin_action` conserva el `exception when others` (correcto: un fallo de auditoría no puede tumbar la operación principal) pero ahora emite `raise warning` en vez de desaparecer en silencio.
+3. Nueva prueba **P12** como guarda de regresión.
+
+---
+
+### 1.10 · La regla individual del caballo no le ganaba a la general — ✅ **HECHO Y VERIFICADO (23/09/2026)**
+
+**Dónde:** `hacer_puja`, la selección de la regla de incremento.
+
+**Qué pasaba.** La consulta ordenaba así:
+
+```
+order by (r.horse_id = p_horse_id) desc, r.min_precio desc
+```
+
+La intención es la correcta y es la regla de negocio: **primero la regla del caballo, después la general del remate.** Pero para la regla general `horse_id` es `NULL`, y `NULL = <uuid>` no devuelve `false` — devuelve `NULL`. PostgreSQL, en un `ORDER BY ... DESC`, ordena los `NULL` **primero** (`DESC` implica `NULLS FIRST`). La regla general se colaba al frente de la individual, siempre.
+
+**Reproducido** en PostgreSQL 16, caballo con precio de salida 100:
+
+| aumento general | aumento individual | debía cobrar | cobraba |
+|---|---|---|---|
+| 20 | 100 | 200 | **120** ❌ |
+| 100 | 20 | 120 | **200** ❌ |
+
+Se probaron los dos sentidos a propósito: con un solo caso no se distingue "tomó la general" de "tomó la más chica". Tomaba la general fuera mayor o menor, lo que descarta que fuera una comparación de montos.
+
+**Consecuencia real, no teórica.** El frontend **sí** elegía bien (`pickIncrement` prueba primero `rulesByHorse[horseId]`). O sea que **la pantalla calculaba con la regla individual y la base cobraba con la general**. Donde se veía en la cara del usuario era en el letrero "Puja manual mínima: X Bs": ese X salía del frontend y la base validaba contra otro número. Ver tarea **2.20**.
+
+**Corregido en** `supabase/migrations/20260923130000_regla_individual_gana.sql`:
+
+```
+order by (r.horse_id is not null) desc, r.min_precio desc
+```
+
+El `WHERE` de arriba ya garantiza que toda fila con `horse_id` no nulo es la de este caballo, así que la expresión separa las dos clases sin producir `NULL` nunca. `desc nulls last` también lo arreglaría, pero deja la lógica de tres valores viva esperando al próximo que lea rápido.
+
+**Verificado:** diff línea a línea de `hacer_puja` antes y después — **cambia exactamente una línea**. Prueba **P13** roja antes, verde después. Ninguna otra prueba se movió (9/13 → 10/13).
+
+**Alcance:** esta migración corrige SOLO la precedencia. No toca el precio de la primera puja, ni `apuesta_minima`, ni el `+10` de la puja manual — eso es 2.17, y va aparte por decisión expresa.
+
 ---
 
 ## Bloque 2 — Modelo de saldo v2
@@ -312,10 +381,12 @@ $function$;
 | 2.11 | Los ajustes manuales de admin validan contra el compromiso | §6.7 |
 | 2.12 | `update wallets set saldo_bloqueado = 0` — **la columna NO se borra todavía** | §9 |
 | 2.13 | **Ruta de salida para un remate `cerrado` que no se puede liquidar** — ver abajo | nueva |
-| 2.14 | **Reglas de puja R1–R5**: botón "Iniciar" (primera puja al precio de salida), campo manual sin tope, alinear frontend con SQL, resolver el choque con `apuesta_minima` | §6bis |
+| 2.14 | **Reglas de puja R1–R5** — lo que quede después de 1.10, 2.17 y 2.20: campo manual sin tope y mínimo por acumulación. Decidido 23/09: **no hace falta un botón "Iniciar" aparte**, lo hace el mismo "Ponerle" | §6bis |
 | 2.15 | **Requisito de juego (rollover), opción B**: tabla `deposit_lots`, porcentaje configurable por instalación, reversión al devolver dinero | §7ter |
 | 2.16 | **Casilla de origen lícito de fondos** en el registro, con texto guardado y fecha de aceptación (`profiles.acepto_origen_licito_at`) | §7ter |
-| 2.17 | **Eliminar `apuesta_minima`**: quitar el piso de `hacer_puja` y el campo de los dos formularios. La columna se deja sin uso y se borra en una migración posterior | §6bis R5 |
+| 2.20 | **El frontend deja de calcular dinero.** RPC que devuelva, por caballo, el mínimo automático y el mínimo manual; la pantalla los muestra y no los recalcula. Hoy `useMemo` de `app/remates/[id]/page.tsx` reimplementa la escalera de precios en TypeScript, y 1.10 demostró que los dos cálculos se separan sin que nadie se entere | nueva |
+| 2.18 | **Libro de la casa** (`house_ledger`) + descomposición caja / comprometido / patrimonio + alarma de cobertura | §7quater |
+| 2.17 | ✅ **HECHO 23/09/2026** — ver abajo. (a) primera puja al `precio_salida` exacto, (b) fuera el piso `apuesta_minima`, (c) fuera el `+10` del mínimo manual | §6bis R5 |
 
 ### 2.13 · El remate trabado en `cerrado` — **deficiencia confirmada**
 
@@ -348,6 +419,78 @@ Con adelantados que viven de martes a sábado, un remate trabado puede quedarse 
 > Orden de candados siempre el mismo —primero usuario, después remate+caballo— para no provocar interbloqueos.
 
 **Aceptación del bloque:** las 13 pruebas de `DISENO_SALDO_V2.md` §11 en verde, **incluida la número 2** (dos pujas simultáneas del mismo usuario desde dos conexiones).
+
+---
+
+### 2.19 · El libro de movimientos no reconstruye el saldo — **encontrado 23/09**
+
+**Dónde:** `wallet_movements`, y todas las funciones que escriben en ella.
+
+**Qué pasa.** La tabla mezcla en una sola columna `monto` dos cosas que no son lo mismo:
+
+| tipo | signo | ¿cambia el saldo total? | ¿de qué columna sale? |
+|---|---|---|---|
+| `recarga` | + | **sí** | entra a `disponible` |
+| `premio` | + | **sí** | entra a `disponible` |
+| `retiro` | − | **sí** | sale de `disponible` |
+| `apuesta_bloqueo` | + | **no** | mueve `disponible` → `bloqueado` |
+| `apuesta_desbloqueo` | + | **no** | mueve `bloqueado` → `disponible` |
+| `ajuste_manual` (cobro al ganador) | − | **sí** | sale de `bloqueado` |
+| `ajuste_manual` (devolución por cancelación) | + | **no** | mueve `bloqueado` → `disponible` |
+| `ajuste_manual` (devolución de retiro rechazado) | + | **sí** | entra a `disponible` |
+| `apuesta_liberacion` | — | nunca se usa | — |
+
+Las dos últimas filas positivas son indistinguibles: mismo tipo, mismo signo, efectos distintos. **Con la tabla así, el saldo de una wallet no se puede reconstruir desde su libro sin leer el código que lo escribió.** Para un sistema donde el licenciatario custodia el dinero real de terceros, eso es exactamente lo que no puede pasar: un auditor —o el propio cliente desconfiado— no tiene forma de verificar un saldo contra los asientos.
+
+**Cómo salió.** La prueba P6 original sumaba `monto` de todos los tipos asumiendo que eran deltas con signo. **Error mío**: estaba roja por una razón equivocada, no por un defecto del sistema. Al reescribirla tuve que listar a mano qué tipos cuentan para cada invariante, y esa lista escrita a mano *es* el hallazgo.
+
+**Qué hacer (en el bloque 2, junto al modelo v2).**
+
+1. Con el modelo v2 no hay bloqueo durante el remate, así que `apuesta_bloqueo` y `apuesta_desbloqueo` **desaparecen**: todo movimiento pasa a ser un delta con signo sobre el saldo real. El problema se disuelve solo para lo nuevo.
+2. Partir `ajuste_manual` en tipos con significado propio: `cobro_puja`, `devolucion_cancelacion`, `devolucion_retiro`. Un `ajuste_manual` genuino (el admin corrige algo a mano) debe quedar reservado para eso y solo para eso, y exigir motivo.
+3. Retirar `apuesta_liberacion` del enum, que nunca se usó.
+4. Regla, escrita en un `comment` sobre la tabla: **`monto` es siempre el delta con signo del saldo total del usuario.** Un asiento que no cambia el saldo total no es un asiento.
+5. Migración de datos: los movimientos históricos son de pruebas, así que se pueden reclasificar o limpiar sin drama. Para el primer cliente, el libro nace limpio.
+
+**Aceptación:** para toda wallet, `saldo_disponible + saldo_bloqueado = suma(monto)` sobre **todos** los movimientos, sin listas de tipos a mano. Prueba P6 reescrita sin el `where tipo in (...)`.
+
+---
+
+### 2.17 · Reglas de la primera puja y del mínimo manual — ✅ **HECHO 23/09/2026**
+
+**Corregido en** `supabase/migrations/20260923140000_reglas_primera_puja.sql`. Tres cambios en el mismo bloque de `hacer_puja`:
+
+**(a) La primera puja compra al `precio_salida` exacto.** Antes cobraba `precio_salida + incremento`. El argumento que cerró la discusión no fue de gusto sino de coherencia: el caballo que nadie puja se queda con la casa por su `precio_salida` y entra al pozo por ese monto, así que el sistema **ya trataba `precio_salida` como precio de compra real** — pero solo para la casa. Un caballo de 100 le costaba 100 a la casa y 110 al usuario.
+
+**(b) Fuera el piso `apuesta_minima`.** Se aplicaba después de elegir la regla, encima del resultado, para cualquier caballo: era el único parámetro que **no se podía sobreescribir por caballo**, justo lo contrario de la regla de negocio. Reproducido: salida 100 + incremento 10 + `apuesta_minima` 500 → el primer clic cobraba 500.
+
+**(c) Fuera el `+10` del mínimo manual.** La manual acepta desde el mínimo automático.
+
+**Consecuencia registrada:** sobre un caballo virgen de salida 100 con incremento 50, una manual de 120 ahora se acepta, porque el mínimo automático de un caballo virgen es 100. La primera oferta no es un escalón de la escalera: es la compra al precio de salida, y de ahí para arriba vale cualquier monto.
+
+**La columna `apuesta_minima` NO se borró.** Es `NOT NULL` y hasta este deploy el frontend la escribía al crear un remate. Queda huérfana y sin efecto. Se borra en **2.21**, después de que el deploy esté arriba.
+
+**Frontend, cambiado en el mismo paso** (tiene que salir con la migración):
+
+| archivo | qué cambió |
+|---|---|
+| `app/remates/[id]/page.tsx` | `nextMin` de caballo virgen = `salida`; `manualMin` = `nextMin` (sin `+10`); fuera `minApuesta` y la columna del `select` |
+| `app/admin/crear-remate/page.tsx` | el campo pasa a llamarse **"Salida por defecto"** y **ya no se guarda en la base**: solo precarga el `precio_salida` de cada caballo, que era su uso real |
+| `app/admin/remates/[id]/page.tsx` | fuera el campo, su validación y la columna del `select`; el caballo nuevo arranca con el precio vacío |
+
+**Orden de despliegue: primero la migración, después el deploy.** Al revés no. Si sale el frontend primero, la pantalla muestra `salida` y la base todavía cobra `salida + incremento`. Con la migración primero, el botón "Ponerle" ya cobra bien (manda `es_manual = false` y la base calcula sola) y lo único desfasado por unos minutos es el letrero del mínimo manual, que queda más alto de lo debido — un fallo conservador: rechaza pujas legales, pero no cobra de más.
+
+**Verificado:** P14 y P15 rojas antes, verdes después. **P13 se rompió con este cambio y hubo que reescribirla**: su escenario pujaba una sola vez sobre un caballo virgen, y desde (a) la primera puja no consulta ninguna regla de incremento. Ahora puja dos veces y mide la segunda. Se comprobó que la versión nueva sigue detectando la regresión de 1.10 volviendo a poner el `ORDER BY` roto a mano.
+
+**Marcador: 12 verdes / 3 rojas de 15.**
+
+---
+
+### 2.21 · Borrar la columna `apuesta_minima` — **pendiente, después del deploy de 2.17**
+
+`alter table public.remates drop column apuesta_minima;`
+
+No antes: es `NOT NULL` y cualquier versión del frontend anterior a 2.17 la escribe al crear un remate. Con el deploy arriba y comprobado que se pueden crear carreras, la columna se cae sin ruido.
 
 ---
 
@@ -580,6 +723,38 @@ alter table public.remates
 - Remate con `autocierre = true` y `closes_at` vencido → cierra por cron, por la misma ruta que el botón (ver 1.9).
 - Remate con `opens_at` a 2 minutos → pasa de `programado` a `abierto` solo.
 
+### 4.4 · Precio de salida general en el formulario, con "aplicar a todos"
+
+**Decidido 23/09/2026.** El precio general **vive en el formulario, no en la base.** Es la diferencia que hundió a `apuesta_minima`: aquel era un piso que se leía **al momento de pujar** y pisaba el precio del caballo en cada clic; este es un valor que se copia dentro del `precio_salida` de cada caballo **al momento de crear** y después nadie lo vuelve a leer. Una cosa sobreescribe al caballo para siempre, la otra lo rellena una vez y se aparta.
+
+**Por qué no lleva columna.** Una columna llamada "precio por defecto" conviviendo con las columnas que guardan la verdad es una invitación a que alguien, dentro de seis meses, la lea en el momento equivocado — que es literalmente el bug de 2.17. Y para el import (4.5) tampoco hace falta: el importador recibe el precio como parámetro y escribe el `precio_salida` real de cada caballo.
+
+**El hueco que hay hoy.** El campo "Salida por defecto" de `app/admin/crear-remate/page.tsx` solo se aplica **en el instante en que se agrega un caballo**. Si el admin agrega los doce caballos y después escribe el precio general, no pasa nada: los doce ya nacieron con el campo vacío. Y ese es justamente el orden en que se llena el formulario en la vida real.
+
+**Qué hacer:**
+
+1. Botón **"aplicar a todos"** al lado del campo, que escribe ese precio en todos los caballos ya cargados de la lista.
+2. Que siga precargando cada caballo nuevo, como ahora.
+3. Lo mismo en la pantalla de edición (`app/admin/remates/[id]/page.tsx`), que hoy no tiene campo equivalente: ahí el caballo nuevo arranca con el precio vacío.
+
+**Aceptación:** cargar 12 caballos, escribir el precio general, pulsar "aplicar a todos" → los 12 quedan con ese precio. Cambiar dos a mano → esos dos conservan el suyo y el botón no se vuelve a pulsar solo. Nada de esto toca la base: `remates` no gana ninguna columna.
+
+---
+
+### 4.5 · Importar la programación de una carrera — **dos capas, en este orden**
+
+**Decidido 23/09/2026.** La captura de datos es donde el admin quema tiempo y mete errores, así que atacarla es correcto. Pero la arquitectura va al revés de lo que parece:
+
+**Capa 1 — el formato y el import manual (esto es lo que se construye).** Se define un formato de importación (CSV o pegado de texto) con la carrera y sus caballos: número, nombre, jinete, precio de salida. El admin lo sube y el sistema arma la carrera completa. Funciona pase lo que pase con cualquier página de terceros, y **es lo que se le vende al licenciatario**.
+
+**Capa 2 — el scraper (opcional, encima, y después).** Un scraper del INH u otra fuente que produzca *ese mismo archivo*. Si se cae o la página cambia, el import manual sigue funcionando y nadie se queda sin operar.
+
+**Por qué en ese orden, y no al revés.** Un scraper ata el producto a que la página de un tercero no cambie. Al licenciarlo, cada cliente pasa a depender de que Jercol mantenga ese scraper vivo: es una **obligación de soporte que no se está cobrando**. Con el import manual de base, el scraper es una comodidad, no un punto único de fallo.
+
+**Pendiente antes de prometer nada:** mirar la página del INH con ojos propios — estructura, estabilidad y términos de uso. **No hay ninguna verificación hecha sobre esto al 23/09/2026.**
+
+---
+
 ### 4.3 · Alarma sobre el cron
 
 **Qué:** un heartbeat que avise si `auto_cerrar_remates` deja de ejecutarse.
@@ -601,6 +776,56 @@ Bloque 0  (base)
 ```
 
 Ningún bloque arranca sin el anterior cerrado y sus pruebas en verde.
+
+## Estado al cierre del bloque 1 — 23/09/2026
+
+**Bloque 1 cerrado.** Arnés: **12 verdes / 3 rojas de 15**. Build de Next.js limpio (TypeScript OK, 25/25 páginas).
+
+Las 3 rojas son defectos reproducidos a propósito, no regresiones: **1.1** (caballo retirado en el pozo), **1.2** (`porcentaje_casa` ignorado) y **1.3** (sin guarda de solvencia). Las tres quedan absorbidas por el bloque 2, porque tocan `liquidar_remate`, que el modelo v2 reescribe entera.
+
+Migraciones del bloque 1, en orden:
+
+| archivo | qué trae |
+|---|---|
+| `20260922120000_fix_enum_apuesta_desbloqueo.sql` | el valor de enum que faltaba — sin él el sobrepuje nunca funcionó |
+| `20260923100000_fk_restrict_dinero.sql` | cinco FK de CASCADE a RESTRICT |
+| `20260923110000_contabilidad_y_guardas.sql` | retiros pendientes en la contabilidad, guardas en los UPDATE, fuera `resumen_casa` |
+| `20260923120000_cierre_unificado.sql` | una sola ruta de cierre, sin liberación de saldos; `admin_id` nullable |
+| `20260923130000_regla_individual_gana.sql` | la regla del caballo le gana a la general |
+| `20260923140000_reglas_primera_puja.sql` | primera puja al precio de salida, fuera `apuesta_minima` y el `+10` |
+
+**PENDIENTE ANTES DEL BLOQUE 2: nada de esto está en producción todavía.** Todo se ha probado contra la base local con `npx supabase db reset`. Falta `npx supabase db push` y el deploy del frontend, **en ese orden** (ver 2.17).
+
+---
+
+## Riesgo estructural anotado para la Fase 2 — custodia del dinero
+
+Planteado por Miguel Ángel (23/09/2026). **No es un defecto de código, es un riesgo del modelo de licencia**, y tiene dos caras.
+
+### a) El dinero vive en la cuenta del licenciatario
+
+Por más que el sistema muestre caja, comprometido y patrimonio, **toda esa plata está en la cuenta bancaria del licenciatario y él puede hacer con ella lo que quiera.** A Jercol no la afecta directamente —el dinero nunca pasa por ahí— pero **sí afecta a la marca**: si un licenciatario hace una locura, el software lleva su nombre.
+
+Pendiente de investigar: **pasarelas de pago en Venezuela**, para automatizar recargas y retiros y reducir la manipulación manual. Hoy todo es transferencia manual aprobada a mano.
+
+### b) Y este SÍ es un hueco del sistema: no hay prueba de pago
+
+Un retiro pasa de `pendiente` a `pagado` porque **un admin aprieta un botón**. No se pide referencia de la transferencia, ni comprobante, ni nada. Dos formas concretas de que la contabilidad se despegue de la realidad:
+
+| Qué pasa | Consecuencia |
+|---|---|
+| Se aprueba el retiro pero **nunca se marca como pagado** | El usuario ya tiene el saldo descontado, el dinero nunca salió, y `retiros_pendientes` crece para siempre sin que nadie mire |
+| Se marca como **pagado sin haber transferido** | La contabilidad dice que se pagó. El usuario dice que no recibió. No hay forma de dirimir |
+
+**Lo que hace falta, y es barato:**
+
+1. **Referencia de pago obligatoria** al marcar `pagado`: número de operación, banco, fecha. Sin eso, la RPC rechaza.
+2. **Alarma de antigüedad**: un retiro en `pendiente` por más de N horas genera aviso. Hoy puede quedarse ahí indefinidamente sin que nadie se entere.
+3. **Comprobante adjunto** (opcional, evaluar): captura de la transferencia en Storage, ligada a la solicitud.
+
+Los puntos 1 y 2 protegen al licenciatario honesto de su propio desorden, que es el caso frecuente — mucho más que el fraude.
+
+---
 
 ## Fuera de alcance de la Fase 1
 

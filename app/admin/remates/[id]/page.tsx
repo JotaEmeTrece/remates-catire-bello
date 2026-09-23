@@ -110,7 +110,6 @@ type RemateRow = {
   nombre: string
   estado: string
   incremento_minimo: string | number
-  apuesta_minima: string | number
   porcentaje_casa: string | number
   created_at: string | null
   closed_at: string | null
@@ -171,7 +170,6 @@ type BidRow = {
 type RemateDraft = {
   estado: string
   incremento_minimo: string
-  apuesta_minima: string
   porcentaje_casa: string
   tipo: string
   opens_dd: string
@@ -324,7 +322,7 @@ export default function AdminRemateDetailPage() {
       const { data: r, error: rErr } = await supabase
         .from("remates")
         .select(
-          "id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at,archived_at,cancelled_at,opens_at,closes_at,tipo"
+          "id,race_id,nombre,estado,incremento_minimo,porcentaje_casa,created_at,closed_at,archived_at,cancelled_at,opens_at,closes_at,tipo"
         )
         .eq("id", remateId)
         .single()
@@ -339,7 +337,6 @@ export default function AdminRemateDetailPage() {
       setRemateDraft({
         estado: rem.estado ?? "abierto",
         incremento_minimo: String(rem.incremento_minimo ?? ""),
-        apuesta_minima: String(rem.apuesta_minima ?? ""),
         porcentaje_casa: String(rem.porcentaje_casa ?? ""),
         tipo: rem.tipo ?? "vivo",
         opens_dd: openParts.dd,
@@ -499,11 +496,9 @@ export default function AdminRemateDetailPage() {
     if (!(n(raceDraft.distancia_m) > 0)) return false
 
     const inc = n(remateDraft.incremento_minimo)
-    const min = n(remateDraft.apuesta_minima)
     const casa = n(remateDraft.porcentaje_casa)
 
     if (!(inc > 0)) return false
-    if (!(min > 0)) return false
     if (!(casa >= 0 && casa <= 100)) return false
 
     const oDateISO = parseDateParts(remateDraft.opens_dd, remateDraft.opens_mm, remateDraft.opens_aa)
@@ -549,7 +544,7 @@ export default function AdminRemateDetailPage() {
           nombre: "",
           jinete: "",
           comentarios: "",
-          precio_salida: remateDraft?.apuesta_minima || "",
+          precio_salida: "",
           retirado: false,
         },
     ])
@@ -664,7 +659,6 @@ export default function AdminRemateDetailPage() {
       const remateUpdate: any = {
         estado: remateDraft.estado.trim() || remate.estado,
         incremento_minimo: n(remateDraft.incremento_minimo),
-        apuesta_minima: n(remateDraft.apuesta_minima),
         porcentaje_casa: n(remateDraft.porcentaje_casa),
         tipo: remateDraft.tipo || remate.tipo || "vivo",
         opens_at: buildCaracasTs(opensDateISO, opensTime24),
@@ -1259,15 +1253,6 @@ export default function AdminRemateDetailPage() {
               </select>
             </div>
 
-            <div>
-              <label className="text-xs text-zinc-400">Apuesta m?nima</label>
-              <input
-                inputMode="decimal"
-                value={remateDraft?.apuesta_minima ?? ""}
-                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, apuesta_minima: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              />
-            </div>
 
             <div>
               <label className="text-xs text-zinc-400">Incremento</label>

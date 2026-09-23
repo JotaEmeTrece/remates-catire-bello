@@ -15,7 +15,6 @@ type RemateRow = {
   nombre: string
   estado: string
   incremento_minimo: string | number
-  apuesta_minima: string | number
   porcentaje_casa: string | number
   created_at: string | null
   closed_at: string | null
@@ -196,7 +195,7 @@ export default function RemateDetallePage() {
 
     const { data: r, error: rErr } = await supabase
       .from("remates")
-      .select("id,race_id,nombre,estado,incremento_minimo,apuesta_minima,porcentaje_casa,created_at,closed_at,archived_at,opens_at,closes_at,tipo")
+      .select("id,race_id,nombre,estado,incremento_minimo,porcentaje_casa,created_at,closed_at,archived_at,opens_at,closes_at,tipo")
       .eq("id", remateId)
       .single()
 
@@ -337,7 +336,6 @@ export default function RemateDetallePage() {
     }
 
     const incFallback = remate ? n(remate.incremento_minimo) : 1
-    const minApuesta = remate ? n(remate.apuesta_minima) : 1
 
     function pickIncrement(horseId: string, ultimoMonto: number) {
       const specific = rulesByHorse[horseId] ?? []
@@ -378,13 +376,15 @@ export default function RemateDetallePage() {
 
       const inc = pickIncrement(h.id, current)
 
-      let nextMin = current + inc
-      if (nextMin < minApuesta) nextMin = minApuesta
+      // Caballo virgen: se compra AL precio de salida, exacto (tarea 2.17).
+      // Con pujas: hay que superar la de arriba por el incremento de la regla.
+      const nextMin = hasBid ? current + inc : salida
 
       salidaByHorse[h.id] = salida
       currentByHorse[h.id] = current
       nextMinByHorse[h.id] = nextMin
-      manualMinByHorse[h.id] = nextMin + 10
+      // La manual acepta DESDE el minimo automatico. Antes exigia +10 clavado.
+      manualMinByHorse[h.id] = nextMin
     }
 
     return { myMaxByHorse, salidaByHorse, currentByHorse, nextMinByHorse, manualMinByHorse, leaderByHorse }
@@ -659,7 +659,7 @@ export default function RemateDetallePage() {
                   : "Casa"
 
                 const manual = manualByHorse[h.id] ?? ""
-                const manualMin = computed.manualMinByHorse[h.id] ?? nextMin + 10
+                const manualMin = computed.manualMinByHorse[h.id] ?? nextMin
                 const disabled = !canBid || placing === h.id || isRetirado
 
                 return (
