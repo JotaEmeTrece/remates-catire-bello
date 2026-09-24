@@ -5,6 +5,21 @@
 **Reemplaza:** el modelo actual de `saldo_bloqueado` con bloqueo y liberación en cada puja
 **Origen:** propuesta de Miguel Ángel (Jota), desarrollada y detallada aquí
 
+> ## ⚠️ Este documento es de agosto. Léelo junto a las correcciones del 23/09/2026
+>
+> El bloque 1 ya se implementó y desplegó, y resolvió por adelantado varias
+> cosas que aquí figuran como pendientes. Además **una afirmación de este
+> documento resultó falsa al verificarla**. Lo corregido está marcado en cada
+> sección, pero en resumen:
+>
+> | Sección | Decía | Realidad al 23/09/2026 |
+> |---|---|---|
+> | R0 | "`hacer_puja` prioriza correctamente" la regla del caballo | **Falso.** Nunca priorizó. Corregido en la tarea 1.10 |
+> | R1 | Hace falta un botón "Iniciar" aparte | No hace falta; lo hace el mismo "Ponerle". Hecho en 2.17 |
+> | R2 | El `+10` del mínimo manual está "pendiente de confirmar" | Eliminado. Hecho en 2.17 |
+> | R5 (a) | Eliminar `apuesta_minima` — plan | Hecho en 2.17. La columna queda huérfana hasta 2.21 |
+> | §6.2 | `cerrar_remate` pasa a cobrar | Va en `_cerrar_remate_interno`, no en `cerrar_remate` (ver abajo) |
+
 ---
 
 ## 1. Qué cambia, en una frase
@@ -172,6 +187,14 @@ end loop;
 update public.remates set estado = 'cerrado', closed_at = now() where id = p_remate_id;
 ```
 
+> **Corrección del 23/09/2026 (tareas 1.8 y 1.9).** Este bloque ya NO va en
+> `cerrar_remate`. Desde la tarea 1.9 existe `_cerrar_remate_interno(uuid)`,
+> que es por donde pasan **los dos** caminos: `cerrar_remate` (que valida rol y
+> delega) y `auto_cerrar_remates` (el cron, que corre sin `auth.uid()` y por eso
+> no puede pasar por la RPC con guarda). **El cobro va dentro de
+> `_cerrar_remate_interno`.** Si se pone en `cerrar_remate`, todo remate que
+> cierre por horario —que es la mayoría— queda cerrado sin cobrarle a nadie.
+
 **Consecuencia importante:** `auto_cerrar_remates()` (el cron de cada minuto) pasa a mover dinero. Hoy solo cambia un estado. Eso eleva mucho lo que está en juego si el cron falla o se ejecuta dos veces — el cierre tiene que ser idempotente por construcción (el `where estado = 'abierto'` lo garantiza, siempre que el `UPDATE` de estado y los débitos vayan en la **misma transacción**).
 
 ### 6.3 `liquidar_remate` — solo paga el premio
@@ -324,7 +347,14 @@ Jota pidió un menú para configurar precio de salida y escala de incrementos po
 - `horses.precio_salida` es **por caballo**.
 - `remate_price_rules.horse_id` es nullable: `null` = regla por defecto del remate, con valor = regla específica de ese caballo.
 - **Las dos pantallas lo soportan.** `app/admin/crear-remate` y `app/admin/remates/[id]` tienen el interruptor `horseRulesEnabled` por caballo, y la de edición ya relee y reconstruye las reglas separando defaults de específicas.
-- `hacer_puja` prioriza correctamente: `order by (r.horse_id = p_horse_id) desc, r.min_precio desc`.
+- ~~`hacer_puja` prioriza correctamente: `order by (r.horse_id = p_horse_id) desc, r.min_precio desc`.~~
+  **❌ ESTO ERA FALSO, y lo di por verificado. Corregido el 23/09/2026 (tarea 1.10).**
+  Para la regla general `horse_id` es `NULL`, `NULL = <uuid>` da `NULL`, y un
+  `ORDER BY ... DESC` pone los `NULL` primero. La regla general le ganaba a la
+  individual **siempre**, fuera mayor o menor. Se reprodujo en PostgreSQL 16 en
+  los dos sentidos. El orden correcto es `(r.horse_id is not null) desc`.
+  Peor aún: el frontend **sí** elegía bien, así que la pantalla calculaba con
+  una regla y la base cobraba con otra.
 
 **Lo que SÍ falta, y es lo que hay que arreglar:**
 

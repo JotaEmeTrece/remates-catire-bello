@@ -59,6 +59,26 @@ begin
     values (v_id, p_saldo, 0)
   on conflict (user_id) do update set saldo_disponible = excluded.saldo_disponible,
                                       saldo_bloqueado = 0;
+
+  -- Registra la recarga aprobada que respalda ese saldo.
+  --
+  -- Sin esto el andamiaje crea dinero de la nada: la wallet tiene saldo pero la
+  -- casa no recibio nunca ese deposito, asi que dinero_casa_disponible() da
+  -- negativo desde el primer momento. La guarda de solvencia de la tarea 1.3
+  -- saltaba en TODAS las pruebas, y parecia un defecto del codigo cuando el
+  -- problema era el escenario.
+  --
+  -- En la aplicacion real el dinero solo entra por aprobar_recarga, que deja su
+  -- fila en deposit_requests. El arnes tiene que reflejar eso o no esta
+  -- probando el sistema, esta probando una ficcion.
+  if p_saldo > 0 then
+    insert into public.deposit_requests
+      (user_id, monto, metodo, telefono_pago, referencia, fecha_pago, estado, approved_at)
+    values
+      (v_id, p_saldo, 'pago_movil', '04120000000', 'ANDAMIAJE-' || p_nombre,
+       current_date, 'aprobado', now());
+  end if;
+
   return v_id;
 end $$;
 
@@ -103,24 +123,31 @@ $$;
 --  Defecto C1 -> se espera FALLA contra el codigo actual (tarea 1.1)
 -- ============================================================================
 do $$
-declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
-        v_pozo_esperado numeric; v_premio_real numeric;
+declare v_admin uuid; v_u uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid; v_h3 uuid;
+        v_premio_real numeric;
 begin
   perform _p.limpiar();
   v_admin := _p.usuario('admin', 0, true);
-  v_u     := _p.usuario('juan', 10000);
+  v_u     := _p.usuario('juan',  10000);
+  v_u2    := _p.usuario('pedro', 10000);
   v_rem   := _p.escenario(3, 100);           -- 3 caballos a 100
   v_h1    := _p.caballo(v_rem, 1);
   v_h2    := _p.caballo(v_rem, 2);
+  v_h3    := _p.caballo(v_rem, 3);
 
-  perform _p.actuar_como(v_u);
-  perform public.hacer_puja(v_rem, v_h1, 200, true);   -- juan compra el 1 en 200
+  perform _p.actuar_como(v_u);  perform public.hacer_puja(v_rem, v_h1, 200, true);  -- juan el 1 en 200
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h3, null, false); -- pedro el 3 en 100
 
   update public.horses set retirado = true where id = v_h2;  -- se retira el 2
 
-  -- pozo correcto: 200 (caballo 1) + 100 (caballo 3, queda a la casa) = 300
-  -- el caballo 2 esta retirado y NO debe sumar
-  v_pozo_esperado := 300;
+  -- Pozo correcto: 200 (caballo 1) + 100 (caballo 3) = 300. El caballo 2 esta
+  -- retirado y NO debe sumar; si sumara, el pozo daria 400 y el premio 300.
+  --
+  -- Pedro puja el tercer caballo a proposito: si quedara a la casa, la casa
+  -- aportaria 100 al pozo sin que ese dinero haya entrado por caja, y la guarda
+  -- de solvencia bloquearia la liquidacion antes de que esta prueba pueda medir
+  -- nada. Ese hueco es real y esta anotado como tarea 2.18 (capital de la casa);
+  -- aqui se evita a proposito para que la prueba mida lo suyo.
 
   perform _p.actuar_como(v_admin);
   perform public.cerrar_remate(v_rem);
@@ -144,17 +171,22 @@ end $$;
 --  Defecto C2 -> se espera FALLA contra el codigo actual (tarea 1.2)
 -- ============================================================================
 do $$
-declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid; v_premio numeric;
+declare v_admin uuid; v_u uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid; v_premio numeric;
 begin
   perform _p.limpiar();
   v_admin := _p.usuario('admin', 0, true);
-  v_u     := _p.usuario('juan', 10000);
+  v_u     := _p.usuario('juan',  10000);
+  v_u2    := _p.usuario('pedro', 10000);
   v_rem   := _p.escenario(2, 100, 30);      -- porcentaje_casa = 30
   v_h1    := _p.caballo(v_rem, 1);
+  v_h2    := _p.caballo(v_rem, 2);
 
-  perform _p.actuar_como(v_u);
-  perform public.hacer_puja(v_rem, v_h1, 200, true);
-  -- pozo = 200 + 100 = 300. Con casa 30% el premio debe ser 210, no 225.
+  perform _p.actuar_como(v_u);  perform public.hacer_puja(v_rem, v_h1, 200, true);
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h2, null, false);
+  -- Pozo = 200 + 100 = 300. Con la casa al 30%, el premio debe ser 210, no 225.
+  -- El 30 no es lo que cobra la casa: es un valor distinto del 25 por defecto,
+  -- elegido para que la prueba detecte si el codigo ignora la columna. Con 25
+  -- pasaria en verde aunque el 0.75 siguiera clavado.
 
   perform _p.actuar_como(v_admin);
   perform public.cerrar_remate(v_rem);
@@ -201,45 +233,70 @@ exception when others then
 end $$;
 
 -- ============================================================================
---  P4 - No se puede acreditar un premio que la casa no puede pagar
---  Defecto C1.3 -> se espera FALLA (no hay guarda de solvencia) (tarea 1.3)
+--  P4 - La casa no puede acreditar un premio que no puede pagar
+--
+--  REESCRITA EN LA TAJADA D. El escenario anterior le daba 100 Bs al usuario y
+--  le hacia pujar 510: desde la tajada B esa puja la rechaza la guarda de
+--  exposicion, asi que no habia pujas, no habia premio, y la liquidacion pasaba
+--  sin probar nada. La prueba se habia vuelto ciega.
+--
+--  ESCENARIO NUEVO, y es el riesgo real del negocio:
+--  juan recarga 600 y toma UN caballo de 500. Los otros NUEVE quedan a la casa
+--  y entran al pozo por su precio de salida, sin que ese dinero haya entrado
+--  nunca por caja. Pozo 5.000, premio 3.750. La casa recibio 500 de verdad.
+--  Acreditar 3.750 es prometer un saldo que no se puede pagar cuando el usuario
+--  lo vaya a retirar.
 -- ============================================================================
 do $$
-declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid; v_fallo boolean := false; v_casa numeric;
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid;
+        v_fallo boolean := false; v_saldo numeric; v_premios int;
 begin
   perform _p.limpiar();
   v_admin := _p.usuario('admin', 0, true);
-  v_u     := _p.usuario('juan', 100);
-  v_rem   := _p.escenario(10, 500);     -- 10 caballos a 500: la casa banca 4500
+  v_u     := _p.usuario('juan', 600);
+  v_rem   := _p.escenario(10, 500);          -- 10 caballos a 500
   v_h1    := _p.caballo(v_rem, 1);
 
-  -- el usuario solo tiene 100; nadie recargo nada, asi que la caja real es 0
   perform _p.actuar_como(v_u);
-  begin perform public.hacer_puja(v_rem, v_h1, 510, true); exception when others then null; end;
+  perform public.hacer_puja(v_rem, v_h1, null, false);   -- toma el 1 en 500
 
   perform _p.actuar_como(v_admin);
-  perform public.cerrar_remate(v_rem);
+  perform public.cerrar_remate(v_rem);                   -- le cobra 500, le quedan 100
   perform public.set_ganador_carrera(v_rem, 1);
   begin
     perform public.liquidar_remate(v_rem);
   exception when others then v_fallo := true;
   end;
 
-  select coalesce(sum(saldo_disponible),0) into v_casa from public.wallets;
-  perform _p.anotar(4, 'Guarda de solvencia al liquidar', 'la liquidacion falla, no acredita',
-    v_fallo, 'liquido sin comprobar la caja; saldo total de usuarios quedo en ' || v_casa::text);
+  select saldo_disponible into v_saldo from public.wallets where user_id = v_u;
+  select count(*) into v_premios from public.wallet_movements where tipo = 'premio';
+
+  perform _p.anotar(4, 'La casa no acredita un premio que no puede pagar',
+    'la liquidacion falla y no se acredita nada; el saldo de juan sigue en 100',
+    v_fallo and v_saldo = 100 and v_premios = 0,
+    'fallo: ' || v_fallo::text || ' | saldo de juan: ' || v_saldo::text ||
+    ' (esperado 100) | movimientos de premio: ' || v_premios::text || ' (esperado 0)');
 exception when others then
-  perform _p.anotar(4, 'Guarda de solvencia al liquidar', 'la liquidacion falla, no acredita', false, 'excepcion: ' || sqlerrm);
+  perform _p.anotar(4, 'La casa no acredita un premio que no puede pagar',
+    'la liquidacion falla y no acredita', false, 'excepcion: ' || sqlerrm);
 end $$;
 
 -- ============================================================================
---  P5 - Escenario mas comun del remate: alguien es superado
---  Defecto en cerrar_remate -> se espera FALLA (tarea 1.8)
---  U1 puja al caballo 1 -> U2 lo supera -> U1 puja al caballo 2 y queda lider
+--  P5 - Escenario mas comun del remate: a alguien lo superan
+--
+--  REESCRITA EN LA TAJADA D. Antes medía `saldo_bloqueado = 400`. Esa columna
+--  ya no se usa y vale 0 siempre por diseño, asi que el assert se volvio falso
+--  sin que el sistema tuviera nada malo. El equivalente correcto en el modelo
+--  v2 es `compromiso_usuario() = 400`: lo mismo que antes se guardaba, ahora se
+--  calcula.
+--
+--  juan puja el caballo 1, pedro lo supera, juan se va al caballo 2 y lo lidera.
+--  Al cerrar deben cobrarle a juan 400 (solo el caballo que lidera, no los 600
+--  de las dos pujas) y a pedro 300.
 -- ============================================================================
 do $$
-declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
-        v_error text := ''; v_bloq1 numeric;
+declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid; v_h3 uuid;
+        v_error text := ''; v_comp numeric; v_juan numeric; v_pedro numeric;
 begin
   perform _p.limpiar();
   v_admin := _p.usuario('admin', 0, true);
@@ -248,48 +305,65 @@ begin
   v_rem   := _p.escenario(3, 100);
   v_h1    := _p.caballo(v_rem, 1);
   v_h2    := _p.caballo(v_rem, 2);
+  v_h3    := _p.caballo(v_rem, 3);
 
   perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h1, 200, true);
   perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h1, 300, true);  -- supera a juan
   perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h2, 400, true);  -- juan lidera el 2
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h3, null, false); -- pedro el 3 en 100
 
-  select saldo_bloqueado into v_bloq1 from public.wallets where user_id = v_u1;
+  v_comp := public.compromiso_usuario(v_u1);
 
   perform _p.actuar_como(v_admin);
   begin
     perform public.cerrar_remate(v_rem);
-    perform public.set_ganador_carrera(v_rem, 2);
+    perform public.set_ganador_carrera(v_rem, 2);   -- gana el caballo de juan
     perform public.liquidar_remate(v_rem);
   exception when others then v_error := sqlerrm;
   end;
 
-  perform _p.anotar(5, 'Usuario superado: cerrar y liquidar', 'sin error; bloqueado de juan = 400',
-    v_error = '' and v_bloq1 = 400,
+  select saldo_disponible into v_juan  from public.wallets where user_id = v_u1;
+  select saldo_disponible into v_pedro from public.wallets where user_id = v_u2;
+
+  -- juan: 10000 - 400 (cobro) + 600 (premio: 75% de un pozo de 800) = 10200
+  -- pedro: 10000 - 300 - 100 = 9600
+  perform _p.anotar(5, 'Usuario superado: compromiso, cobro y premio correctos',
+    'compromiso de juan = 400 (no 600); sin error; juan 10200 y pedro 9600',
+    v_error = '' and v_comp = 400 and v_juan = 10200 and v_pedro = 9600,
     case when v_error <> '' then 'error: ' || v_error
-         else 'bloqueado de juan antes de cerrar: ' || v_bloq1::text || ' (deberia ser 400)' end);
+         else 'compromiso: ' || v_comp::text || ' (esperado 400) | juan: ' || v_juan::text ||
+              ' (esperado 10200) | pedro: ' || v_pedro::text || ' (esperado 9600)' end);
 exception when others then
-  perform _p.anotar(5, 'Usuario superado: cerrar y liquidar', 'sin error', false, 'excepcion: ' || sqlerrm);
+  perform _p.anotar(5, 'Usuario superado: compromiso, cobro y premio correctos',
+    'compromiso 400, sin error', false, 'excepcion: ' || sqlerrm);
 end $$;
 
 -- ============================================================================
---  P6 - El libro de movimientos reconstruye los saldos
+--  P6 - El libro de movimientos reconstruye los saldos, SIN listas a mano
 --
---  Ciclo completo con dinero que entra SOLO por recarga aprobada, para que el
---  saldo inicial sea 0 y cada bolivar tenga su asiento.
+--  VERSION DE LA TAJADA C. La anterior tenia que enumerar a mano que tipos de
+--  movimiento contaban para cada invariante:
 --
---  Dos invariantes por wallet:
---    A) disponible + bloqueado = suma de los movimientos que mueven caja
---       (recarga, premio, retiro, ajuste_manual)
---    B) bloqueado = apuesta_bloqueo - apuesta_desbloqueo + ajuste_manual
---       (el cobro al ganador es un ajuste_manual negativo que sale de bloqueado)
+--      where m.tipo in ('recarga','premio','retiro','ajuste_manual')
 --
---  OJO: que esta prueba tenga que listar los tipos a mano es en si mismo el
---  hallazgo. Ver tarea 2.19 del backlog: `monto` no es un delta con signo,
---  `ajuste_manual` se usa para tres cosas distintas (cobro al ganador,
---  devolucion por cancelacion, devolucion por retiro rechazado) y dos de ellas
---  tienen el mismo signo pero tocan columnas distintas. Con la tabla asi, el
---  saldo de una wallet NO se puede reconstruir desde su libro sin conocer el
---  codigo que lo escribio.
+--  Esa lista era el defecto 2.19 hecho codigo: `monto` no era un delta con
+--  signo, porque apuesta_bloqueo y apuesta_desbloqueo solo movian dinero entre
+--  columnas sin cambiar el saldo total. La prueba se rompio sola en cuanto
+--  aparecio `apuesta_cobro`, que no estaba en la lista.
+--
+--  Con el modelo v2 ya no hay bloqueo durante el remate, asi que TODO
+--  movimiento es un delta con signo sobre el saldo real. Por eso ahora el
+--  invariante se puede escribir como debe ser:
+--
+--      saldo_disponible + saldo_bloqueado = suma de TODOS los movimientos
+--
+--  Sin `where tipo in (...)`. Ese es el criterio de aceptacion de la tarea 2.19,
+--  y esta prueba es lo que lo verifica. Si alguien vuelve a introducir un tipo
+--  que no sea un delta con signo, esto se pone rojo.
+--
+--  Invariante B: saldo_bloqueado tiene que ser 0 en todas las wallets. La
+--  columna sigue existiendo a proposito (DISENO_SALDO_V2.md §9: se verifica
+--  unas semanas en 0 y despues se borra). Esta prueba es la verificacion.
 -- ============================================================================
 do $$
 declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
@@ -322,44 +396,41 @@ begin
   perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h2, 400, true);
 
   perform _p.actuar_como(v_admin);
-  begin perform public.cerrar_remate(v_rem);        exception when others then null; end;
+  begin perform public.cerrar_remate(v_rem);          exception when others then null; end;
   begin perform public.set_ganador_carrera(v_rem, 2); exception when others then null; end;
-  begin perform public.liquidar_remate(v_rem);      exception when others then null; end;
+  begin perform public.liquidar_remate(v_rem);        exception when others then null; end;
 
-  -- y un retiro, para ejercitar el tipo `retiro`
   perform _p.actuar_como(v_u1);
   begin perform public.solicitar_retiro(100, 'pago_movil', '04121234567'); exception when others then null; end;
 
+  -- A: el libro completo, sin filtrar por tipo
   select count(*) into v_desc_a from (
     select w.id,
            w.saldo_disponible + w.saldo_bloqueado as saldo,
            coalesce((select sum(m.monto) from public.wallet_movements m
-                     where m.wallet_id = w.id
-                       and m.tipo in ('recarga','premio','retiro','ajuste_manual')), 0) as caja
+                     where m.wallet_id = w.id), 0) as libro
     from public.wallets w
-  ) x where abs(saldo - caja) > 0.001;
+  ) x where abs(saldo - libro) > 0.001;
 
-  select count(*) into v_desc_b from (
-    select w.id,
-           w.saldo_bloqueado as bloq,
-           coalesce((select sum(case when m.tipo = 'apuesta_desbloqueo' then -m.monto else m.monto end)
-                     from public.wallet_movements m
-                     where m.wallet_id = w.id
-                       and m.tipo in ('apuesta_bloqueo','apuesta_desbloqueo','ajuste_manual')), 0) as calc
-    from public.wallets w
-  ) y where abs(bloq - calc) > 0.001;
+  -- B: saldo_bloqueado debe estar muerto
+  select count(*) into v_desc_b
+  from public.wallets where coalesce(saldo_bloqueado, 0) <> 0;
 
   select string_agg(p.username || ': saldo ' || (w.saldo_disponible + w.saldo_bloqueado)::text ||
-                    ' / bloq ' || w.saldo_bloqueado::text, ' | ' order by p.username)
+                    ' / libro ' || coalesce((select sum(m.monto) from public.wallet_movements m
+                                             where m.wallet_id = w.id), 0)::text,
+                    ' | ' order by p.username)
     into v_detalle
   from public.wallets w join public.profiles p on p.id = w.user_id;
 
-  perform _p.anotar(6, 'El libro reconstruye los saldos', 'A y B sin descuadres',
+  perform _p.anotar(6, 'El libro reconstruye los saldos sin listas a mano',
+    'saldo = suma de TODOS los movimientos, y saldo_bloqueado en 0',
     v_desc_a = 0 and v_desc_b = 0,
-    'descuadres A(caja): ' || v_desc_a::text || ', B(bloqueado): ' || v_desc_b::text ||
+    'descuadres A(libro): ' || v_desc_a::text || ', B(bloqueado<>0): ' || v_desc_b::text ||
     ' | ' || coalesce(v_detalle,''));
 exception when others then
-  perform _p.anotar(6, 'El libro reconstruye los saldos', 'A y B sin descuadres', false, 'excepcion: ' || sqlerrm);
+  perform _p.anotar(6, 'El libro reconstruye los saldos sin listas a mano',
+    'saldo = suma de todos los movimientos', false, 'excepcion: ' || sqlerrm);
 end $$;
 
 
@@ -507,6 +578,7 @@ do $$
 declare v_admin uuid; v_u1 uuid; v_u2 uuid;
         v_remA uuid; v_remB uuid; v_hA1 uuid; v_hA2 uuid; v_hB1 uuid; v_hB2 uuid;
         v_movA int; v_movB int; v_estA text; v_estB text; v_n int; v_errA text := '';
+        v_sumA numeric; v_sumB numeric;
 begin
   perform _p.limpiar();
   v_admin := _p.usuario('admin', 0, true);
@@ -538,17 +610,26 @@ begin
 
   select estado::text into v_estA from public.remates where id = v_remA;
   select estado::text into v_estB from public.remates where id = v_remB;
-  select count(*) into v_movA from public.wallet_movements where ref_externa = v_remA::text;
-  select count(*) into v_movB from public.wallet_movements where ref_externa = v_remB::text;
+  -- ACTUALIZADA EN LA TAJADA C. Antes exigia 0 movimientos, porque cerrar solo
+  -- cambiaba un estado. Desde C, cerrar COBRA, asi que 0 movimientos ya no es
+  -- lo correcto: lo correcto es que los dos caminos cobren LO MISMO.
+  -- El assert nuevo es mas fuerte que el viejo: compara cantidad Y monto, y
+  -- exige cobro distinto de cero, asi que tampoco pasaria si el cierre dejara
+  -- de cobrar por los dos lados a la vez.
+  select count(*), coalesce(sum(monto),0) into v_movA, v_sumA
+    from public.wallet_movements where ref_externa = v_remA::text;
+  select count(*), coalesce(sum(monto),0) into v_movB, v_sumB
+    from public.wallet_movements where ref_externa = v_remB::text;
 
-  perform _p.anotar(11, 'Cron y boton dejan el mismo estado',
-    'ambos cerrados, 0 movimientos, sin error',
-    v_errA = '' and v_estA = 'cerrado' and v_estB = 'cerrado' and v_movA = 0 and v_movB = 0,
+  perform _p.anotar(11, 'Cron y boton cobran exactamente lo mismo',
+    'ambos cerrados; mismo numero de movimientos y mismo monto, y distinto de cero',
+    v_errA = '' and v_estA = 'cerrado' and v_estB = 'cerrado'
+      and v_movA = v_movB and v_sumA = v_sumB and v_movA > 0,
     case when v_errA <> '' then 'el boton fallo: ' || v_errA
-         else 'boton: ' || v_estA || ' con ' || v_movA::text || ' mov | cron: ' || v_estB ||
-              ' con ' || v_movB::text || ' mov' end);
+         else 'boton: ' || v_estA || ' con ' || v_movA::text || ' mov por ' || v_sumA::text ||
+              ' | cron: ' || v_estB || ' con ' || v_movB::text || ' mov por ' || v_sumB::text end);
 exception when others then
-  perform _p.anotar(11, 'Cron y boton dejan el mismo estado', 'ambos cerrados, 0 movimientos', false, 'excepcion: ' || sqlerrm);
+  perform _p.anotar(11, 'Cron y boton cobran exactamente lo mismo', 'mismo cobro por los dos caminos', false, 'excepcion: ' || sqlerrm);
 end $$;
 
 -- ============================================================================
@@ -736,6 +817,381 @@ begin
 exception when others then
   perform _p.anotar(15, 'Sin piso apuesta_minima y manual desde el automatico',
     'auto = 100, manual 100 ok, manual 99 no', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P16 - compromiso_usuario: si te superan, esa puja deja de contar
+--  DISENO_SALDO_V2.md §7bis, escenario 1
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_hA uuid; v_hB uuid; v_comp numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan',  1000000);
+  v_u2    := _p.usuario('pedro', 1000000);
+  v_rem   := _p.escenario(2, 100);
+  update public.remates set incremento_minimo = 100 where id = v_rem;
+  v_hA := _p.caballo(v_rem, 1);
+  v_hB := _p.caballo(v_rem, 2);
+
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_hA, null, false);  -- 100
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_hA, null, false);  -- 200, supera a juan
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_hB, 200, true);    -- juan lidera B en 200
+
+  v_comp := public.compromiso_usuario(v_u1);
+  perform _p.anotar(16, 'Compromiso: la puja superada deja de contar',
+    'compromiso de juan = 200 (no 300)',
+    v_comp = 200, 'compromiso: ' || v_comp::text || ' (si da 300, sumo la puja superada)');
+exception when others then
+  perform _p.anotar(16, 'Compromiso: la puja superada deja de contar', '200', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P17 - compromiso_usuario: subirse la propia puja reemplaza, no suma
+--  DISENO_SALDO_V2.md §7bis, escenario 2. El "delta" sale gratis.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h uuid; v_comp numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000000);
+  v_rem   := _p.escenario(2, 200);
+  update public.remates set incremento_minimo = 10 where id = v_rem;
+  v_h := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h, null, false);   -- toma el caballo en 200
+  perform public.hacer_puja(v_rem, v_h, 260, true);     -- se sube a si mismo a 260
+
+  v_comp := public.compromiso_usuario(v_u);
+  perform _p.anotar(17, 'Compromiso: subirse la propia puja reemplaza',
+    'compromiso = 260 (no 460)',
+    v_comp = 260, 'compromiso: ' || v_comp::text || ' (si da 460, sumo las dos pujas)');
+exception when others then
+  perform _p.anotar(17, 'Compromiso: subirse la propia puja reemplaza', '260', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P18 - compromiso_usuario: retirar el caballo lo saca del compromiso
+--  DISENO_SALDO_V2.md §7bis, escenario 3. Sin tocar un solo peso.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h uuid;
+        v_antes numeric; v_despues numeric; v_movs int;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000000);
+  v_rem   := _p.escenario(2, 300);
+  v_h     := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h, null, false);
+  v_antes := public.compromiso_usuario(v_u);
+
+  update public.horses set retirado = true where id = v_h;
+  v_despues := public.compromiso_usuario(v_u);
+
+  select count(*) into v_movs from public.wallet_movements;
+
+  perform _p.anotar(18, 'Compromiso: el caballo retirado sale solo',
+    'antes 300, despues 0, y sin movimientos nuevos de wallet',
+    v_antes = 300 and v_despues = 0,
+    'antes: ' || v_antes::text || ' | despues: ' || v_despues::text ||
+    ' | movimientos de wallet en total: ' || v_movs::text);
+exception when others then
+  perform _p.anotar(18, 'Compromiso: el caballo retirado sale solo', 'antes 300, despues 0', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P19 - dinero_casa_disponible() y el panel de contabilidad dan lo mismo
+--
+--  Si estos dos numeros se separan, la guarda de solvencia protege contra una
+--  caja distinta a la que el admin ve en pantalla.
+--
+--  SE MIDE EN DOS MOMENTOS A PROPOSITO. El punto que discrimina es el primero:
+--  con el remate cerrado y sin liquidar, parte del dinero de juan esta en
+--  saldo_bloqueado. Si dinero_casa_disponible() restara solo saldo_disponible
+--  (como decia el diseno original), ahi daria 100 mientras el panel da 0.
+--  El segundo momento comprueba ademas que el numero no es cero por casualidad.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_dep uuid; v_rem uuid; v_h uuid;
+        v_f1 numeric; v_p1 numeric; v_f2 numeric; v_p2 numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 0);
+
+  perform _p.actuar_como(v_u);
+  perform public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF1', current_date);
+  select id into v_dep from public.deposit_requests where user_id = v_u;
+  perform _p.actuar_como(v_admin);
+  perform public.aprobar_recarga(v_dep);
+
+  v_rem := _p.escenario(2, 100);
+  v_h   := _p.caballo(v_rem, 1);
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h, null, false);      -- juan toma el 1 en 100
+
+  -- MOMENTO 1: cerrado y sin liquidar. Juan tiene 900 disponible y 100 bloqueado.
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+  v_f1 := public.dinero_casa_disponible();
+  v_p1 := (public.admin_contabilidad_resumen() ->> 'dinero_casa')::numeric;
+
+  -- MOMENTO 2: gana el caballo 2, que es de la casa. No hay premio, y la
+  -- liquidacion le cobra a juan los 100. La casa se queda con ellos.
+  perform public.set_ganador_carrera(v_rem, 2);
+  perform public.liquidar_remate(v_rem);
+  v_f2 := public.dinero_casa_disponible();
+  v_p2 := (public.admin_contabilidad_resumen() ->> 'dinero_casa')::numeric;
+
+  perform _p.anotar(19, 'La caja de la funcion y la del panel coinciden',
+    'iguales en los dos momentos, y 100 al final (no cero por casualidad)',
+    v_f1 = v_p1 and v_f2 = v_p2 and v_f2 = 100,
+    'cerrado sin liquidar -> funcion: ' || v_f1::text || ' / panel: ' || v_p1::text ||
+    ' | liquidado -> funcion: ' || v_f2::text || ' / panel: ' || v_p2::text || ' (esperado 100)');
+exception when others then
+  perform _p.anotar(19, 'La caja de la funcion y la del panel coinciden',
+    'iguales en los dos momentos y 100 al final', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P20 - La guarda de exposicion: el compromiso cruza todos los remates
+--
+--  Un usuario con 500 Bs no puede liderar dos caballos de 300. El modelo viejo
+--  lo impedia porque descontaba del saldo al pujar; el v2 no descuenta nada,
+--  asi que la unica defensa es esta guarda.
+--
+--  Se comprueba ademas que pujar NO escribe en wallets ni en wallet_movements.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_hA uuid; v_hB uuid;
+        v_err text := ''; v_comp numeric; v_saldo numeric; v_movs int;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 500);
+  v_rem   := _p.escenario(2, 300);
+  v_hA := _p.caballo(v_rem, 1);
+  v_hB := _p.caballo(v_rem, 2);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_hA, null, false);        -- 300, entra
+  begin
+    perform public.hacer_puja(v_rem, v_hB, null, false);      -- otros 300, no caben
+  exception when others then v_err := sqlerrm;
+  end;
+
+  v_comp  := public.compromiso_usuario(v_u);
+  select saldo_disponible into v_saldo from public.wallets where user_id = v_u;
+  select count(*) into v_movs from public.wallet_movements;
+
+  perform _p.anotar(20, 'Guarda de exposicion entre remates',
+    'la 2da puja se rechaza; compromiso 300, saldo intacto en 500, 0 movimientos',
+    v_err <> '' and v_comp = 300 and v_saldo = 500 and v_movs = 0,
+    'compromiso: ' || v_comp::text || ' | saldo: ' || v_saldo::text ||
+    ' | movimientos: ' || v_movs::text ||
+    ' | 2da puja: ' || coalesce(nullif(v_err,''), 'ACEPTADA (mal)'));
+exception when others then
+  perform _p.anotar(20, 'Guarda de exposicion entre remates', 'la 2da se rechaza', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P21 - hacer_puja toma el candado por USUARIO, no solo por caballo
+--
+--  Es el punto critico del modelo v2. La guarda de P20 cruza TODOS los remates
+--  abiertos de un usuario, asi que serializar por caballo no alcanza: dos pujas
+--  simultaneas del mismo usuario a caballos distintos leen el mismo compromiso
+--  viejo y pasan las dos.
+--
+--  REPRODUCIDO el 24/09/2026 con dos conexiones reales a PostgreSQL 16,
+--  usuario con 500 Bs y dos pujas simultaneas de 300:
+--
+--    sin candado por usuario -> 2 pujas aceptadas, 600 comprometidos ❌
+--    con candado por usuario -> 1 aceptada, 1 rechazada, 300 comprometidos ✅
+--
+--  Esa prueba necesita dos conexiones y no cabe en este arnes. Lo que SI cabe,
+--  y es una guarda de regresion de verdad, es comprobar en pg_locks que los dos
+--  candados quedan efectivamente tomados: espacio 1 (usuario) y espacio 2
+--  (remate+caballo). Si alguien reescribe la funcion y se lleva por delante el
+--  primero, esta prueba se pone roja.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h uuid;
+        v_usuario boolean; v_caballo boolean;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 10000);
+  v_rem   := _p.escenario(2, 100);
+  v_h     := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h, null, false);
+
+  select exists (select 1 from pg_locks
+                 where locktype = 'advisory' and pid = pg_backend_pid()
+                   and classid = 1 and objsubid = 2)
+    into v_usuario;
+  select exists (select 1 from pg_locks
+                 where locktype = 'advisory' and pid = pg_backend_pid()
+                   and classid = 2 and objsubid = 2)
+    into v_caballo;
+
+  perform _p.anotar(21, 'La puja toma el candado por usuario y por caballo',
+    'los dos candados advisory tomados (espacio 1 y espacio 2)',
+    v_usuario and v_caballo,
+    'candado de usuario: ' || v_usuario::text || ' | candado de caballo: ' || v_caballo::text);
+exception when others then
+  perform _p.anotar(21, 'La puja toma el candado por usuario y por caballo',
+    'los dos candados tomados', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P22 - Cancelar un remate CERRADO devuelve exactamente lo cobrado
+--
+--  Es la ruta de salida de la tarea 2.13. Hasta hoy, un remate que se cerraba y
+--  no se podia liquidar -carrera suspendida, el admin no alcanza a cargar el
+--  ganador, la liquidacion falla- dejaba el dinero cobrado sin forma de
+--  devolverlo salvo metiendo mano en la base de datos.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
+        v_juan numeric; v_pedro numeric; v_estado text; v_segunda boolean := false;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan',  1000);
+  v_u2    := _p.usuario('pedro', 1000);
+  v_rem   := _p.escenario(3, 100);
+  v_h1 := _p.caballo(v_rem, 1); v_h2 := _p.caballo(v_rem, 2);
+
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h1, 200, true);
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h2, 300, true);
+
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);                       -- cobra 200 y 300
+  perform public.cancelar_remate(v_rem, 'Carrera suspendida');
+
+  select saldo_disponible into v_juan  from public.wallets where user_id = v_u1;
+  select saldo_disponible into v_pedro from public.wallets where user_id = v_u2;
+  select estado::text into v_estado from public.remates where id = v_rem;
+
+  begin
+    perform public.cancelar_remate(v_rem, 'otra vez');
+  exception when others then v_segunda := true;
+  end;
+
+  perform _p.anotar(22, 'Cancelar un remate cerrado devuelve lo cobrado',
+    'juan y pedro vuelven a 1000, estado cancelado, y no se puede cancelar dos veces',
+    v_juan = 1000 and v_pedro = 1000 and v_estado = 'cancelado' and v_segunda,
+    'juan: ' || v_juan::text || ' | pedro: ' || v_pedro::text || ' | estado: ' || v_estado ||
+    ' | segunda cancelacion rechazada: ' || v_segunda::text);
+exception when others then
+  perform _p.anotar(22, 'Cancelar un remate cerrado devuelve lo cobrado',
+    'los dos vuelven a 1000', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P23 - Cancelar un remate ABIERTO no mueve un solo peso
+--
+--  En el modelo anterior habia que localizar cada bloqueo y revertirlo, con el
+--  riesgo de descuadre que eso traia. En el v2 no se cobro nada todavia, asi
+--  que no hay nada que devolver: el compromiso baja solo porque el remate deja
+--  de estar abierto.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid;
+        v_saldo numeric; v_comp numeric; v_movs int; v_estado text;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000);
+  v_rem   := _p.escenario(2, 100);
+  v_h1    := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, 200, true);
+
+  perform _p.actuar_como(v_admin);
+  perform public.cancelar_remate(v_rem, 'Se cayo la jornada');
+
+  select saldo_disponible into v_saldo from public.wallets where user_id = v_u;
+  v_comp := public.compromiso_usuario(v_u);
+  select count(*) into v_movs from public.wallet_movements;
+  select estado::text into v_estado from public.remates where id = v_rem;
+
+  perform _p.anotar(23, 'Cancelar un remate abierto no mueve dinero',
+    'saldo intacto en 1000, compromiso 0, cero movimientos de wallet',
+    v_saldo = 1000 and v_comp = 0 and v_movs = 0 and v_estado = 'cancelado',
+    'saldo: ' || v_saldo::text || ' | compromiso: ' || v_comp::text ||
+    ' | movimientos: ' || v_movs::text || ' | estado: ' || v_estado);
+exception when others then
+  perform _p.anotar(23, 'Cancelar un remate abierto no mueve dinero',
+    'nada se mueve', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P24 - No se puede retirar dinero que esta comprometido en pujas
+--
+--  🔴 SE ESPERA ROJA hasta la tajada E. Es el hueco que abren B, C y D juntas,
+--  y esta escrito como prueba para que no se olvide.
+--
+--  En el modelo anterior, pujar descontaba de saldo_disponible, asi que el
+--  retiro no podia tocar ese dinero: ya no estaba ahi. En el v2 el dinero se
+--  queda en saldo_disponible hasta que cierra el remate, y solicitar_retiro
+--  sigue comprobando solo `saldo_disponible >= monto`. Resultado: un usuario
+--  con 1000 comprometidos en 800 puede pedir el retiro de los 1000, y cuando
+--  el remate cierre, el cobro va a reventar con "Invariante roto".
+--
+--  La correccion es §7 del diseño: retirable = saldo - compromiso, con el mismo
+--  candado por usuario que hacer_puja.
+--
+--  ⚠️ MIENTRAS ESTA PRUEBA SIGA ROJA, la aplicacion NO puede tener usuarios
+--  reales pujando, aunque las migraciones esten en produccion.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid;
+        v_rechazado boolean := false; v_saldo numeric; v_comp numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000);
+  v_rem   := _p.escenario(2, 800);
+  v_h1    := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, null, false);    -- toma el caballo en 800
+  v_comp := public.compromiso_usuario(v_u);
+
+  begin
+    perform public.solicitar_retiro(1000, 'pago_movil', '04121234567');
+  exception when others then v_rechazado := true;
+  end;
+
+  select saldo_disponible into v_saldo from public.wallets where user_id = v_u;
+
+  perform _p.anotar(24, 'No se retira dinero comprometido en pujas',
+    'el retiro de 1000 se rechaza: solo 200 son retirables',
+    v_rechazado and v_saldo = 1000,
+    'compromiso: ' || v_comp::text || ' | retiro de 1000 rechazado: ' || v_rechazado::text ||
+    ' | saldo tras el intento: ' || v_saldo::text || ' (si bajo a 0, se llevo dinero comprometido)');
+exception when others then
+  perform _p.anotar(24, 'No se retira dinero comprometido en pujas',
+    'el retiro se rechaza', false, 'excepcion: ' || sqlerrm);
 end $$;
 
 
