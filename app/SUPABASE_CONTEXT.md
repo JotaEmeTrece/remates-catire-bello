@@ -1,3 +1,15 @@
+> # ⛔ LEGACY — NO USAR COMO FUENTE DE VERDAD
+>
+> **Este archivo es una foto del esquema de Supabase tomada a mano antes de que el proyecto tuviera migraciones.** Se conserva a propósito, como registro de dónde venía la app.
+>
+> **La fuente de verdad del esquema es `supabase/migrations/`.** Todo lo que diga este archivo sobre funciones, políticas o columnas puede estar desactualizado y muy probablemente lo esté: desde que se generó se rehicieron `hacer_puja`, `cerrar_remate`, `liquidar_remate`, `cancelar_remate`, `solicitar_retiro`, el modelo de saldo completo (v2, sin `saldo_bloqueado`) y se añadió `house_ledger`.
+>
+> Si necesitas saber cómo está la base hoy: lee las migraciones, o corre `docs/supabase/verificar_produccion.sql`.
+>
+> Ver `DISENO_SALDO_V2.md` y `BACKLOG_FASE1_FIXES.md` para el porqué de cada cambio.
+
+---
+
 ## Tables & Columns (information_schema.columns)
 
 

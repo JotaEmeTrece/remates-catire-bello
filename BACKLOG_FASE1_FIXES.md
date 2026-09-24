@@ -494,6 +494,22 @@ No antes: es `NOT NULL` y cualquier versión del frontend anterior a 2.17 la esc
 
 ---
 
+### 2.22 · `casa_resumen()` se le escapaba a cualquier usuario logueado — ✅ **HECHO 24/09/2026**
+
+Fallo mío, introducido en la misma migración del libro (`20260924150000`).
+
+`house_ledger` quedó bien protegida: RLS activa y política `for select ... using (is_admin())`. Pero `casa_resumen()` se creó `security definer` y con `grant execute to authenticated` **sin comprobar quién llama**. Una función `definer` lee la tabla por encima de la RLS, así que la política de la tabla no protegía nada: cualquier apostador logueado podía abrir la consola del navegador, escribir `supabase.rpc('casa_resumen')` y ver el patrimonio de la casa, el capital aportado y las utilidades retiradas.
+
+**La lección, que vale para todo el bloque 3:** proteger la tabla no protege el dato si hay una función `definer` que lo devuelve sumado. La guarda va *dentro* de la función.
+
+Arreglado en `20260924160000_casa_resumen_solo_admin.sql`, con el mismo patrón de guarda que ya usaba `admin_contabilidad_resumen()`. Migración aparte y no editando la 150000: si esa ya se empujó, editarla no la vuelve a ejecutar nunca.
+
+Prueba P32 en el arnés: al usuario normal lo rechaza, al admin le responde.
+
+**Pendiente derivado (bloque 3):** auditar TODAS las funciones `security definer` con `grant ... to authenticated` y comprobar una por una que llevan guarda. `casa_resumen` fue la que encontré; no es evidencia de que sea la única.
+
+---
+
 ## Bloque 3 — Blindaje de escritura
 
 > Depende de: bloques 0-2. **Es el bloque que convierte la app en algo que puede operar alguien que no seas tú.**

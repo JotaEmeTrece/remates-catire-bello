@@ -1542,6 +1542,50 @@ exception when others then
 end $$;
 
 
+-- ============================================================================
+--  P32 - La foto contable de la casa solo la ve un admin
+--
+--  casa_resumen() es `security definer`: lee house_ledger por encima de la
+--  RLS. Si no comprueba quien llama, la RLS de la tabla no sirve de nada y
+--  cualquier apostador logueado ve el patrimonio de la casa desde la consola
+--  del navegador. Esta prueba mira las dos mitades: que al usuario normal lo
+--  rechace, y que al admin le siga respondiendo.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u1 uuid; r record;
+        v_rechazado boolean := false; v_admin_ok boolean := false; v_msg text := '';
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan', 1000);
+
+  perform _p.actuar_como(v_u1);
+  begin
+    select * into r from public.casa_resumen();
+    v_msg := 'usuario normal la leyo: patrimonio ' || coalesce(r.patrimonio::text, 'null');
+  exception when others then
+    v_rechazado := true;
+    v_msg := 'rechazo al usuario normal (' || sqlerrm || ')';
+  end;
+
+  perform _p.actuar_como(v_admin);
+  begin
+    select * into r from public.casa_resumen();
+    v_admin_ok := r.caja_total is not null;
+    v_msg := v_msg || ' | admin: caja ' || coalesce(r.caja_total::text, 'null');
+  exception when others then
+    v_msg := v_msg || ' | admin tambien rechazado: ' || sqlerrm;
+  end;
+
+  perform _p.anotar(32, 'La foto contable de la casa solo la ve un admin',
+    'usuario normal: excepcion; admin: responde',
+    v_rechazado and v_admin_ok, v_msg);
+exception when others then
+  perform _p.anotar(32, 'La foto contable de la casa solo la ve un admin',
+    'usuario normal: excepcion; admin: responde', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;
