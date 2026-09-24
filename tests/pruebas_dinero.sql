@@ -1195,6 +1195,126 @@ exception when others then
 end $$;
 
 
+-- ============================================================================
+--  P25 - mi_wallet_resumen devuelve los tres numeros
+--
+--  Que el usuario vea "tienes 1000, 800 comprometidos en pujas, puedes retirar
+--  200" evita la mitad de los mensajes a soporte, y sobre todo evita que
+--  intente el retiro y reciba un error que no entiende.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h uuid;
+        v_total numeric; v_comp numeric; v_retirable numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000);
+  v_rem   := _p.escenario(2, 800);
+  v_h     := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h, null, false);      -- compromete 800
+
+  select saldo_disponible, comprometido, disponible_para_retirar
+    into v_total, v_comp, v_retirable
+  from public.mi_wallet_resumen();
+
+  perform _p.anotar(25, 'mi_wallet_resumen devuelve los tres numeros',
+    'total 1000, comprometido 800, retirable 200',
+    v_total = 1000 and v_comp = 800 and v_retirable = 200,
+    'total: ' || v_total::text || ' | comprometido: ' || v_comp::text ||
+    ' | retirable: ' || v_retirable::text);
+exception when others then
+  perform _p.anotar(25, 'mi_wallet_resumen devuelve los tres numeros',
+    'total 1000, comprometido 800, retirable 200', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P26 - Retirar un caballo con el remate ABIERTO no toca el dinero
+--
+--  Este es el argumento a favor de todo el rediseno. En el modelo anterior
+--  habia que localizar el bloqueo del lider y revertirlo con cuidado. Aqui la
+--  puja deja de contar sola, porque compromiso_usuario() excluye los retirados.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
+        v_antes numeric; v_despues numeric; v_saldo numeric; v_movs int; v_msg text;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000);
+  v_rem   := _p.escenario(2, 300);
+  v_h1 := _p.caballo(v_rem, 1); v_h2 := _p.caballo(v_rem, 2);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, null, false);   -- 300
+  perform public.hacer_puja(v_rem, v_h2, null, false);   -- 300 mas, total 600
+  v_antes := public.compromiso_usuario(v_u);
+
+  perform _p.actuar_como(v_admin);
+  v_msg := public.retirar_caballo(v_h1, 'Se lesiono en el paddock');
+
+  v_despues := public.compromiso_usuario(v_u);
+  select saldo_disponible into v_saldo from public.wallets where user_id = v_u;
+  select count(*) into v_movs from public.wallet_movements;
+
+  perform _p.anotar(26, 'Retirar un caballo con el remate abierto no mueve dinero',
+    'compromiso baja de 600 a 300 solo, saldo intacto en 1000, 0 movimientos',
+    v_antes = 600 and v_despues = 300 and v_saldo = 1000 and v_movs = 0,
+    'compromiso: ' || v_antes::text || ' -> ' || v_despues::text ||
+    ' | saldo: ' || v_saldo::text || ' | movimientos: ' || v_movs::text || ' | ' || v_msg);
+exception when others then
+  perform _p.anotar(26, 'Retirar un caballo con el remate abierto no mueve dinero',
+    'nada se mueve', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P27 - Retirar un caballo con el remate YA CERRADO devuelve lo cobrado
+--
+--  Aqui si hubo cobro, asi que hay que devolver. Se devuelve exactamente la
+--  puja mas alta sobre ese caballo, que es lo que se cobro por el al cerrar.
+--  Se comprueba ademas que retirarlo dos veces se rechaza: si no, cada clic
+--  devolveria el dinero otra vez.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
+        v_juan numeric; v_pedro numeric; v_segunda boolean := false; v_msg text;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan',  1000);
+  v_u2    := _p.usuario('pedro', 1000);
+  v_rem   := _p.escenario(2, 100);
+  v_h1 := _p.caballo(v_rem, 1); v_h2 := _p.caballo(v_rem, 2);
+
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h1, 200, true);
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h2, 300, true);
+
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);        -- cobra 200 a juan y 300 a pedro
+  v_msg := public.retirar_caballo(v_h1, 'Retirado despues del cierre');
+
+  begin
+    perform public.retirar_caballo(v_h1, 'otra vez');
+  exception when others then v_segunda := true;
+  end;
+
+  select saldo_disponible into v_juan  from public.wallets where user_id = v_u1;
+  select saldo_disponible into v_pedro from public.wallets where user_id = v_u2;
+
+  perform _p.anotar(27, 'Retirar un caballo ya cobrado devuelve exactamente lo suyo',
+    'juan vuelve a 1000, pedro sigue en 700, y no se puede retirar dos veces',
+    v_juan = 1000 and v_pedro = 700 and v_segunda,
+    'juan: ' || v_juan::text || ' (esperado 1000) | pedro: ' || v_pedro::text ||
+    ' (esperado 700) | segundo retiro rechazado: ' || v_segunda::text || ' | ' || v_msg);
+exception when others then
+  perform _p.anotar(27, 'Retirar un caballo ya cobrado devuelve exactamente lo suyo',
+    'juan 1000, pedro 700', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;
