@@ -41,6 +41,9 @@ begin
   delete from public.withdraw_requests;
   delete from public.deposit_requests;
   delete from public.wallets;
+  -- ANTES que profiles: house_ledger.created_by apunta ahi. Es el mismo
+  -- problema de orden que tenia reset_app_cero.sql con race_results.
+  delete from public.house_ledger;
   delete from public.profiles;
   delete from auth.users;
 end $$;
@@ -1378,6 +1381,164 @@ begin
 exception when others then
   perform _p.anotar(28, 'La RPC de minimos coincide con lo que cobra la puja',
     'coinciden', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P29 - Liquidar asienta el resultado en el libro de la casa, solo
+--
+--  El admin no lo escribe ni lo puede escribir: registrar_movimiento_casa
+--  rechaza el tipo 'resultado_remate'. Que el 25% o el pozo ganado vayan donde
+--  tienen que ir no puede quedar al criterio de nadie.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid; v_h3 uuid;
+        v_asientos int; v_monto numeric; v_gano_casa boolean; v_manual boolean := false;
+begin
+  perform _p.limpiar();
+  delete from public.house_ledger;
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan',  10000);
+  v_u2    := _p.usuario('pedro', 10000);
+  v_rem   := _p.escenario(3, 100);
+  v_h1 := _p.caballo(v_rem,1); v_h2 := _p.caballo(v_rem,2); v_h3 := _p.caballo(v_rem,3);
+
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h1, 200, true);
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h1, 300, true);
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h2, 400, true);
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h3, null, false);
+
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);          -- cobra 400 a juan y 400 a pedro
+  perform public.set_ganador_carrera(v_rem, 2); -- gana el caballo de juan
+  perform public.liquidar_remate(v_rem);        -- pozo 800, premio 600
+
+  select count(*), max(monto), bool_or((detalles->>'gano_la_casa')::boolean)
+    into v_asientos, v_monto, v_gano_casa
+  from public.house_ledger where tipo = 'resultado_remate' and ref_externa = v_rem::text;
+
+  -- y que el admin no pueda escribirlo a mano
+  begin
+    perform public.registrar_movimiento_casa('resultado_remate', 999, 'a mano');
+  exception when others then v_manual := true;
+  end;
+
+  -- cobrado 800, premio 600 -> a la casa le quedaron 200 (el 25% de 800)
+  perform _p.anotar(29, 'Liquidar asienta el resultado en el libro de la casa',
+    'un asiento de 200 (800 cobrados - 600 de premio), y el admin no lo puede crear a mano',
+    v_asientos = 1 and v_monto = 200 and v_gano_casa = false and v_manual,
+    'asientos: ' || v_asientos::text || ' | monto: ' || coalesce(v_monto,0)::text ||
+    ' (esperado 200) | creacion manual rechazada: ' || v_manual::text);
+exception when others then
+  perform _p.anotar(29, 'Liquidar asienta el resultado en el libro de la casa',
+    'un asiento de 200', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P30 - El capital propio desbloquea la liquidacion
+--
+--  Es el escenario que destapo la tajada D y la razon de ser de esta tarea.
+--  Juan recarga 600 y toma UN caballo de 500. Los otros nueve quedan a la casa
+--  y entran al pozo sin que ese dinero haya entrado por caja: pozo 5.000,
+--  premio 3.750, caja 500. La guarda lo bloquea, y hace bien.
+--
+--  Con el libro, el licenciatario aporta capital propio y la liquidacion pasa.
+--  Antes de 2.18 esto no tenia salida: la guarda bloqueaba y no habia forma de
+--  decirle al sistema que la casa tenia dinero.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid;
+        v_fallo1 boolean := false; v_fallo2 boolean := false;
+        v_caja_antes numeric; v_caja_despues numeric; v_saldo numeric;
+begin
+  perform _p.limpiar();
+  delete from public.house_ledger;
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 600);
+  v_rem   := _p.escenario(10, 500);
+  v_h1    := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, null, false);
+
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+  perform public.set_ganador_carrera(v_rem, 1);
+
+  v_caja_antes := public.dinero_casa_disponible();
+  begin perform public.liquidar_remate(v_rem); exception when others then v_fallo1 := true; end;
+
+  -- el licenciatario aporta capital propio
+  perform public.registrar_movimiento_casa('aporte_capital', 5000, 'Capital de trabajo de la casa');
+  v_caja_despues := public.dinero_casa_disponible();
+
+  begin perform public.liquidar_remate(v_rem); exception when others then v_fallo2 := true; end;
+  select saldo_disponible into v_saldo from public.wallets where user_id = v_u;
+
+  -- juan: 600 - 500 (cobro) + 3750 (premio) = 3850
+  perform _p.anotar(30, 'El capital propio desbloquea la liquidacion',
+    'antes falla con caja 500; tras aportar 5000 la caja sube a 5500 y liquida',
+    v_fallo1 and not v_fallo2 and v_caja_antes = 500 and v_caja_despues = 5500 and v_saldo = 3850,
+    'caja antes: ' || v_caja_antes::text || ' (bloqueo: ' || v_fallo1::text ||
+    ') | caja despues: ' || v_caja_despues::text || ' (bloqueo: ' || v_fallo2::text ||
+    ') | saldo de juan: ' || v_saldo::text || ' (esperado 3850)');
+exception when others then
+  perform _p.anotar(30, 'El capital propio desbloquea la liquidacion',
+    'el aporte desbloquea', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P31 - El libro de la casa cuadra contra los saldos
+--
+--  LA PRUEBA MAS IMPORTANTE DE LA TAREA 2.18, y la razon por la que vale la
+--  pena tener el libro. Hay dos formas independientes de calcular lo mismo:
+--
+--    suma de los `resultado_remate`  (lo que la casa gano, segun su libro)
+--    recargas - retiros - saldos     (lo que los usuarios perdieron, en neto)
+--
+--  Tienen que dar identico. Un descuadre significa que el libro y los saldos
+--  no cuentan la misma historia: o hay un bug, o alguien metio mano.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h1 uuid; v_h2 uuid; v_h3 uuid;
+        r record;
+begin
+  perform _p.limpiar();
+  delete from public.house_ledger;
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan',  10000);
+  v_u2    := _p.usuario('pedro', 10000);
+  v_rem   := _p.escenario(3, 100);
+  v_h1 := _p.caballo(v_rem,1); v_h2 := _p.caballo(v_rem,2); v_h3 := _p.caballo(v_rem,3);
+
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h1, 200, true);
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h1, 300, true);
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h2, 400, true);
+  perform _p.actuar_como(v_u2); perform public.hacer_puja(v_rem, v_h3, null, false);
+
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+  perform public.set_ganador_carrera(v_rem, 2);
+  perform public.liquidar_remate(v_rem);
+
+  -- y un retiro, para que el calculo tenga que lidiar con obligaciones
+  perform _p.actuar_como(v_u1);
+  perform public.solicitar_retiro(500, 'pago_movil', '04121234567');
+  perform _p.actuar_como(v_admin);
+
+  select * into r from public.casa_resumen();
+
+  perform _p.anotar(31, 'El libro de la casa cuadra contra los saldos',
+    'descuadre = 0; resultado del libro = perdida neta de los usuarios = 200',
+    r.descuadre = 0 and r.resultado_operativo = 200 and r.perdida_usuarios = 200 and r.cubierto,
+    'libro: ' || r.resultado_operativo::text || ' | saldos: ' || r.perdida_usuarios::text ||
+    ' | descuadre: ' || r.descuadre::text || ' | patrimonio: ' || r.patrimonio::text ||
+    ' | cubierto: ' || r.cubierto::text);
+exception when others then
+  perform _p.anotar(31, 'El libro de la casa cuadra contra los saldos',
+    'descuadre = 0', false, 'excepcion: ' || sqlerrm);
 end $$;
 
 

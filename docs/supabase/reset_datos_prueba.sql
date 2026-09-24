@@ -16,6 +16,7 @@
 --    - remates, carreras, caballos, pujas y reglas de precio
 --    - race_results
 --    - recargas, retiros y movimientos de wallet
+--    - el libro de la casa (house_ledger)
 --    - deja las wallets en 0
 --
 --  QUE NO TOCA
@@ -44,12 +45,20 @@ delete from public.remates;
 delete from public.horses;
 delete from public.races;
 
--- 5) Operaciones financieras.
+-- 5) Libro de la casa (tarea 2.18).
+--    Va aqui por dos razones. Sus asientos `resultado_remate` apuntan a
+--    remates que ya se borraron arriba, asi que dejarlos seria guardar el
+--    resultado de partidas que ya no existen. Y `created_by` referencia a
+--    profiles: si algun dia este script llega a borrar usuarios, tiene que
+--    irse antes que ellos.
+delete from public.house_ledger;
+
+-- 6) Operaciones financieras.
 delete from public.wallet_movements;
 delete from public.deposit_requests;
 delete from public.withdraw_requests;
 
--- 6) Wallets a cero. No se borran: siguen atadas a los usuarios que quedan.
+-- 7) Wallets a cero. No se borran: siguen atadas a los usuarios que quedan.
 update public.wallets
    set saldo_disponible = 0,
        saldo_bloqueado  = 0;
@@ -66,6 +75,7 @@ union all select 'race_results',     count(*) from public.race_results
 union all select 'wallet_movements', count(*) from public.wallet_movements
 union all select 'deposit_requests', count(*) from public.deposit_requests
 union all select 'withdraw_requests', count(*) from public.withdraw_requests
+union all select 'house_ledger',      count(*) from public.house_ledger
 union all select 'wallets con saldo <> 0',
        (select count(*) from public.wallets where saldo_disponible <> 0 or saldo_bloqueado <> 0)
 union all select 'profiles (NO se tocan)', count(*) from public.profiles
