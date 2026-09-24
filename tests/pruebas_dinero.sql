@@ -1315,6 +1315,72 @@ exception when others then
 end $$;
 
 
+-- ============================================================================
+--  P28 - La RPC de minimos dice EXACTAMENTE lo que cobra hacer_puja
+--
+--  Esta es la prueba de la tarea 2.20 y la mas importante de la tajada F.
+--
+--  Hasta hoy el frontend recalculaba la escalera de precios en TypeScript y la
+--  base la calculaba por su cuenta. El 23/09 se demostro que se habian separado
+--  sin que nadie se enterara: la pantalla elegia la regla del caballo y la base
+--  la general. El usuario leia un numero y la base cobraba otro.
+--
+--  Ahora las dos salen de _incremento_aplicable(). Esta prueba lo verifica caso
+--  por caballo, en un escenario con regla general, regla individual, caballos
+--  virgenes y caballos ya pujados.
+-- ============================================================================
+do $$
+declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid;
+        v_h1 uuid; v_h2 uuid; v_h3 uuid;
+        r record; v_dicho numeric; v_cobrado numeric;
+        v_fallos int := 0; v_detalle text := '';
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan',  1000000);
+  v_u2    := _p.usuario('pedro', 1000000);
+  v_rem   := _p.escenario(3, 100);
+  update public.remates set incremento_minimo = 7 where id = v_rem;   -- fallback raro a proposito
+  v_h1 := _p.caballo(v_rem,1); v_h2 := _p.caballo(v_rem,2); v_h3 := _p.caballo(v_rem,3);
+
+  -- regla general del remate y una individual para el caballo 2
+  insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
+    values (v_rem, null, 0, null, 25);
+  insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
+    values (v_rem, v_h2, 0, null, 150);
+
+  -- el 1 y el 2 ya tienen puja; el 3 queda virgen
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h1, null, false);
+  perform _p.actuar_como(v_u1); perform public.hacer_puja(v_rem, v_h2, null, false);
+
+  -- para cada caballo: lo que dice la RPC contra lo que cobra la puja
+  for r in select horse_id, numero, minimo_auto from public.remate_minimos(v_rem) order by numero
+  loop
+    v_dicho := r.minimo_auto;
+    perform _p.actuar_como(v_u2);
+    perform public.hacer_puja(v_rem, r.horse_id, null, false);
+    select max(monto) into v_cobrado from public.bids where horse_id = r.horse_id;
+
+    if v_cobrado <> v_dicho then
+      v_fallos := v_fallos + 1;
+      v_detalle := v_detalle || 'caballo ' || r.numero::text ||
+                   ': RPC dijo ' || v_dicho::text || ' y cobro ' || v_cobrado::text || '; ';
+    else
+      v_detalle := v_detalle || 'c' || r.numero::text || '=' || v_cobrado::text || ' ';
+    end if;
+  end loop;
+
+  perform _p.anotar(28, 'La RPC de minimos coincide con lo que cobra la puja',
+    'para cada caballo, minimo_auto de la RPC = monto que registra hacer_puja',
+    v_fallos = 0,
+    case when v_fallos > 0 then 'DIVERGENCIAS -> ' || v_detalle
+         else 'coinciden en los 3 caballos -> ' || v_detalle end);
+exception when others then
+  perform _p.anotar(28, 'La RPC de minimos coincide con lo que cobra la puja',
+    'coinciden', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;

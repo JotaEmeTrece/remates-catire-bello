@@ -60,17 +60,24 @@ type BidRow = {
 type WalletRow = {
   id: string
   saldo_disponible: string | number
-  saldo_bloqueado: string | number
+  comprometido: string | number
+  disponible_para_retirar: string | number
 }
 
-type PriceRuleRow = {
-  id: string
-  remate_id: string
-  horse_id: string | null
-  min_precio: string | number
-  max_precio: string | number | null
+// Una fila de remate_minimos(). La pantalla muestra estos numeros; no los
+// calcula. Es el contrato con la base.
+type MinimoRow = {
+  horse_id: string
+  numero: number
+  retirado: boolean
+  precio_salida: string | number
+  hay_pujas: boolean
+  monto_actual: string | number
+  lider_user_id: string | null
+  soy_lider: boolean
   incremento: string | number
-  created_at: string | null
+  minimo_auto: string | number
+  minimo_manual: string | number
 }
 
 function n(v: string | number | null | undefined) {
@@ -142,7 +149,12 @@ export default function RemateDetallePage() {
   const [race, setRace] = useState<RaceRow | null>(null)
   const [horses, setHorses] = useState<HorseRow[]>([])
   const [bids, setBids] = useState<BidRow[]>([])
-  const [priceRules, setPriceRules] = useState<PriceRuleRow[]>([])
+  // Los minimos ya NO se calculan aqui. Los da la base con remate_minimos()
+  // (tarea 2.20). Tener la escalera de precios implementada dos veces -una en
+  // SQL y otra en TypeScript- fue como llegamos al defecto 1.10: la pantalla
+  // elegia la regla del caballo y la base la general, y el usuario leia un
+  // numero mientras la base cobraba otro.
+  const [minimos, setMinimos] = useState<Record<string, MinimoRow>>({})
 
   const [manualByHorse, setManualByHorse] = useState<Record<string, string>>({})
 
@@ -177,14 +189,12 @@ export default function RemateDetallePage() {
       setIsAdmin(adminFlag)
 
       if (!adminFlag) {
-        const { data: w, error: wErr } = await supabase
-          .from("wallets")
-          .select("id,saldo_disponible,saldo_bloqueado")
-          .eq("user_id", sessionUserId)
-          .maybeSingle()
+        // Los tres numeros los da la base. Esta pantalla no los calcula.
+        const { data: w, error: wErr } = await supabase.rpc("mi_wallet_resumen")
 
         if (wErr) console.error("wallet err:", wErr.message)
-        setWallet(w ? (w as WalletRow) : null)
+        const wFirst = Array.isArray(w) ? w[0] : null
+        setWallet(wFirst ? (wFirst as WalletRow) : null)
       } else {
         setWallet(null)
       }
@@ -205,7 +215,7 @@ export default function RemateDetallePage() {
       setRace(null)
       setHorses([])
       setBids([])
-      setPriceRules([])
+      setMinimos({})
       setLoading(false)
       setRefreshing(false)
       return
@@ -233,7 +243,7 @@ export default function RemateDetallePage() {
       setError(hErr.message)
       setHorses([])
       setBids([])
-      setPriceRules([])
+      setMinimos({})
       setLoading(false)
       setRefreshing(false)
       return
@@ -251,17 +261,17 @@ export default function RemateDetallePage() {
       setBids((b ?? []) as BidRow[])
     }
 
-    const { data: pr, error: prErr } = await supabase
-      .from("remate_price_rules")
-      .select("id,remate_id,horse_id,min_precio,max_precio,incremento,created_at")
-      .eq("remate_id", remateId)
-      .order("min_precio", { ascending: true })
+    const { data: mins, error: minErr } = await supabase.rpc("remate_minimos", {
+      p_remate_id: remateId,
+    })
 
-    if (prErr) {
-      console.error("price rules err:", prErr.message)
-      setPriceRules([])
+    if (minErr) {
+      console.error("remate_minimos err:", minErr.message)
+      setMinimos({})
     } else {
-      setPriceRules((pr ?? []) as PriceRuleRow[])
+      const map: Record<string, MinimoRow> = {}
+      for (const row of (mins ?? []) as MinimoRow[]) map[row.horse_id] = row
+      setMinimos(map)
     }
 
     setLoading(false)
@@ -282,7 +292,6 @@ export default function RemateDetallePage() {
   const computed = useMemo(() => {
     const maxBidByHorse: Record<string, number> = {}
     const hasBidByHorse: Record<string, boolean> = {}
-    const myMaxByHorse: Record<string, number> = {}
     const leaderByHorse: Record<
       string,
       { monto: number; created_at: string | null; username: string; is_me: boolean }
@@ -294,12 +303,6 @@ export default function RemateDetallePage() {
 
       if (maxBidByHorse[bid.horse_id] === undefined || m > maxBidByHorse[bid.horse_id]) {
         maxBidByHorse[bid.horse_id] = m
-      }
-
-      if (bid.is_me) {
-        if (myMaxByHorse[bid.horse_id] === undefined || m > myMaxByHorse[bid.horse_id]) {
-          myMaxByHorse[bid.horse_id] = m
-        }
       }
 
       const prevLeader = leaderByHorse[bid.horse_id]
@@ -324,82 +327,25 @@ export default function RemateDetallePage() {
       }
     }
 
-    const defaultRules: PriceRuleRow[] = []
-    const rulesByHorse: Record<string, PriceRuleRow[]> = {}
+    return { leaderByHorse }
+  }, [bids])
 
-    for (const r of priceRules) {
-      if (!r.horse_id) defaultRules.push(r)
-      else {
-        if (!rulesByHorse[r.horse_id]) rulesByHorse[r.horse_id] = []
-        rulesByHorse[r.horse_id].push(r)
-      }
-    }
-
-    const incFallback = remate ? n(remate.incremento_minimo) : 1
-
-    function pickIncrement(horseId: string, ultimoMonto: number) {
-      const specific = rulesByHorse[horseId] ?? []
-      const candidatesSpecific = specific.filter((r) => {
-        const min = n(r.min_precio)
-        const max = r.max_precio === null ? null : n(r.max_precio)
-        return ultimoMonto >= min && (max === null || ultimoMonto < max)
-      })
-
-      if (candidatesSpecific.length > 0) {
-        candidatesSpecific.sort((a, b) => n(b.min_precio) - n(a.min_precio))
-        return n(candidatesSpecific[0].incremento)
-      }
-
-      const candidatesDefault = defaultRules.filter((r) => {
-        const min = n(r.min_precio)
-        const max = r.max_precio === null ? null : n(r.max_precio)
-        return ultimoMonto >= min && (max === null || ultimoMonto < max)
-      })
-
-      if (candidatesDefault.length > 0) {
-        candidatesDefault.sort((a, b) => n(b.min_precio) - n(a.min_precio))
-        return n(candidatesDefault[0].incremento)
-      }
-
-      return incFallback
-    }
-
-    const salidaByHorse: Record<string, number> = {}
-    const currentByHorse: Record<string, number> = {}
-    const nextMinByHorse: Record<string, number> = {}
-    const manualMinByHorse: Record<string, number> = {}
-
-    for (const h of horses) {
-      const salida = Math.max(0, n(h.precio_salida))
-      const hasBid = !!hasBidByHorse[h.id]
-      const current = hasBid ? (maxBidByHorse[h.id] ?? 0) : salida
-
-      const inc = pickIncrement(h.id, current)
-
-      // Caballo virgen: se compra AL precio de salida, exacto (tarea 2.17).
-      // Con pujas: hay que superar la de arriba por el incremento de la regla.
-      const nextMin = hasBid ? current + inc : salida
-
-      salidaByHorse[h.id] = salida
-      currentByHorse[h.id] = current
-      nextMinByHorse[h.id] = nextMin
-      // La manual acepta DESDE el minimo automatico. Antes exigia +10 clavado.
-      manualMinByHorse[h.id] = nextMin
-    }
-
-    return { myMaxByHorse, salidaByHorse, currentByHorse, nextMinByHorse, manualMinByHorse, leaderByHorse }
-  }, [bids, horses, priceRules, remate])
-
+  // Pozo: cada caballo no retirado aporta su puja lider, o su precio de salida
+  // si nadie lo pujo (queda con la casa). Los montos salen de remate_minimos().
   const pozoTotal = useMemo(() => {
     let total = 0
     for (const h of horses) {
-      const current = computed.currentByHorse[h.id]
-      total += n(current ?? h.precio_salida)
+      if (h.retirado) continue
+      const m = minimos[h.id]
+      total += m ? n(m.monto_actual) : n(h.precio_salida)
     }
     return total
-  }, [horses, computed])
+  }, [horses, minimos])
 
-  const casaTotal = pozoTotal * 0.25
+  // El porcentaje sale del remate, no de un 0.25 clavado. Cada instalacion
+  // pone el suyo, y la liquidacion usa esta misma columna.
+  const pctCasa = remate ? n(remate.porcentaje_casa) : 25
+  const casaTotal = Math.round(pozoTotal * (pctCasa / 100) * 100) / 100
 
   async function placeBid(horseId: string, monto: number, esManual: boolean) {
     if (!remate) return
@@ -416,12 +362,28 @@ export default function RemateDetallePage() {
     setError("")
     setNotice("")
 
-    const disponible = wallet ? n(wallet.saldo_disponible) : 0
-    const myPrev = computed.myMaxByHorse[horseId] ?? 0
-    const requerido = Math.max(0, monto - myPrev)
-    if (requerido > disponible) {
+    // MISMA cuenta que hace la base en hacer_puja: el compromiso de este
+    // usuario, descontando lo que ya lidera en ESTE caballo (porque subir la
+    // propia puja la reemplaza, no la suma), mas el monto nuevo, contra el
+    // saldo total.
+    //
+    // Antes se restaba `myMaxByHorse`, que es la puja mas alta que el usuario
+    // hizo en ese caballo ALGUNA VEZ, fuera o no el lider actual. El SQL solo
+    // resta si es el lider AHORA. Por eso la pantalla decia que hacia falta
+    // menos de lo que el servidor exigia, el usuario apretaba el boton y le
+    // salia "Saldo insuficiente" sin entender por que. Defecto R4 del diseno.
+    const min = minimos[horseId]
+    const saldoTotal = wallet ? n(wallet.saldo_disponible) : 0
+    const comprometidoActual = wallet ? n(wallet.comprometido) : 0
+    const miPujaEnEste = min?.soy_lider ? n(min.monto_actual) : 0
+    const comprometidoSinEste = Math.max(0, comprometidoActual - miPujaEnEste)
+    if (saldoTotal < comprometidoSinEste + monto) {
       setPlacing(null)
-      setError(`Saldo insuficiente. Disponible: ${formatMoney(disponible)} Bs. Requerido: ${formatMoney(requerido)} Bs`)
+      setError(
+        `Saldo insuficiente. Tienes ${formatMoney(saldoTotal)} Bs, ` +
+        `${formatMoney(comprometidoSinEste)} Bs comprometidos en otras pujas, ` +
+        `y esta puja son ${formatMoney(monto)} Bs.`
+      )
       return
     }
 
@@ -527,7 +489,8 @@ export default function RemateDetallePage() {
   }
 
   const disponible = wallet ? n(wallet.saldo_disponible) : 0
-  const bloqueado = wallet ? n(wallet.saldo_bloqueado) : 0
+  const comprometido = wallet ? n(wallet.comprometido) : 0
+  const retirable = wallet ? n(wallet.disponible_para_retirar) : 0
   const isOpen = String(remate.estado).toLowerCase().includes("abierto")
   const canBid = isOpen && !!userId && !isAdmin
 
@@ -589,8 +552,12 @@ export default function RemateDetallePage() {
               <div className="mt-1 text-lg font-semibold text-emerald-300">{formatMoney(disponible)} Bs</div>
             </div>
             <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-3">
-              <div className="text-xs text-zinc-500">Bloqueado</div>
-              <div className="mt-1 text-lg font-semibold text-amber-300">{formatMoney(bloqueado)} Bs</div>
+              <div className="text-xs text-zinc-500">En pujas</div>
+              <div className="mt-1 text-lg font-semibold text-amber-300">{formatMoney(comprometido)} Bs</div>
+            </div>
+            <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-3">
+              <div className="text-xs text-zinc-500">Puedes retirar</div>
+              <div className="mt-1 text-lg font-semibold text-sky-300">{formatMoney(retirable)} Bs</div>
             </div>
           </div>
         )}
@@ -601,7 +568,7 @@ export default function RemateDetallePage() {
             <div className="mt-1 text-lg font-semibold">{formatMoney(pozoTotal)} Bs</div>
           </div>
           <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-3">
-            <div className="text-xs text-zinc-500">Casa 25%</div>
+            <div className="text-xs text-zinc-500">Casa {pctCasa}%</div>
             <div className="mt-1 text-lg font-semibold text-amber-300">{formatMoney(casaTotal)} Bs</div>
           </div>
         </div>
@@ -647,9 +614,10 @@ export default function RemateDetallePage() {
               </div>
 
               {horses.map((h) => {
-                const salida = computed.salidaByHorse[h.id] ?? 0
-                const current = computed.currentByHorse[h.id] ?? salida
-                const nextMin = computed.nextMinByHorse[h.id] ?? current
+                const m = minimos[h.id]
+                const salida = m ? n(m.precio_salida) : n(h.precio_salida)
+                const current = m ? n(m.monto_actual) : salida
+                const nextMin = m ? n(m.minimo_auto) : current
                 const leader = computed.leaderByHorse[h.id]
                 const isRetirado = !!h.retirado
                 const leaderLabel = leader
@@ -659,7 +627,7 @@ export default function RemateDetallePage() {
                   : "Casa"
 
                 const manual = manualByHorse[h.id] ?? ""
-                const manualMin = computed.manualMinByHorse[h.id] ?? nextMin
+                const manualMin = m ? n(m.minimo_manual) : nextMin
                 const disabled = !canBid || placing === h.id || isRetirado
 
                 return (

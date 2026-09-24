@@ -11,7 +11,6 @@ type WalletRow = {
   username: string | null
   email: string | null
   saldo_disponible: string | number
-  saldo_bloqueado: string | number
   created_at: string | null
 }
 
@@ -141,9 +140,11 @@ export default function SuperUsuariosPage() {
                     <div>
                       Disponible: <span className="font-semibold">{formatMoney(it.saldo_disponible)} Bs</span>
                     </div>
-                    <div className="text-zinc-300">
-                      Bloqueado: <span className="font-semibold">{formatMoney(it.saldo_bloqueado)} Bs</span>
-                    </div>
+                    {/* Se quito "Bloqueado". Desde el modelo v2 esa columna
+                        vale 0 siempre, asi que mostrarla era decirle al admin
+                        un numero que no significa nada. Lo que corresponde
+                        mostrar es el compromiso, que se calcula por usuario y
+                        necesita su propia consulta: queda anotado. */}
                     <div className="mt-1 text-xs text-zinc-500">Creado: {formatDT(it.created_at)}</div>
                   </div>
                 </div>

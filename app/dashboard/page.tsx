@@ -12,7 +12,15 @@ import { CornerLogo } from "@/app/components/BrandLogo"
 type WalletRow = {
   id: string
   saldo_disponible: string | number
-  saldo_bloqueado: string | number
+}
+
+// Los tres numeros salen de la base, no se calculan aqui (tarea 2.20).
+// `comprometido` es la suma de las pujas que el usuario lidera ahora mismo;
+// no es un saldo guardado, se calcula en el momento.
+type ResumenRow = {
+  saldo_disponible: string | number
+  comprometido: string | number
+  disponible_para_retirar: string | number
 }
 
 type WalletMovementRow = {
@@ -100,6 +108,7 @@ export default function DashboardPage() {
   const [displayName, setDisplayName] = useState("")
 
   const [wallet, setWallet] = useState<WalletRow | null>(null)
+  const [resumen, setResumen] = useState<ResumenRow | null>(null)
   const [history, setHistory] = useState<WalletMovementRow[]>([])
 
   const [lastDeposits, setLastDeposits] = useState<DepositRequestRow[]>([])
@@ -157,7 +166,7 @@ export default function DashboardPage() {
 
     const { data: w, error: wErr } = await supabase
       .from("wallets")
-      .select("id,saldo_disponible,saldo_bloqueado")
+      .select("id,saldo_disponible")
       .eq("user_id", user.id)
       .maybeSingle()
 
@@ -174,6 +183,13 @@ export default function DashboardPage() {
 
     const walletRow = (w ?? null) as WalletRow | null
     setWallet(walletRow)
+
+    // Los numeros que ve el usuario los da la base. Si esta pantalla los
+    // recalculara por su cuenta, volveriamos al defecto de la tarea 1.10: la
+    // pantalla diciendo una cosa y la base haciendo otra.
+    const { data: rData } = await supabase.rpc("mi_wallet_resumen")
+    const rFirst = Array.isArray(rData) ? rData[0] : null
+    setResumen(rFirst ?? null)
 
     // 3) Historial (IMPORTANTÍSIMO)
     if (walletRow?.id) {
@@ -265,8 +281,9 @@ export default function DashboardPage() {
     )
   }
 
-  const disponible = wallet ? n(wallet.saldo_disponible) : 0
-  const bloqueado = wallet ? n(wallet.saldo_bloqueado) : 0
+  const total = resumen ? n(resumen.saldo_disponible) : (wallet ? n(wallet.saldo_disponible) : 0)
+  const comprometido = resumen ? n(resumen.comprometido) : 0
+  const retirable = resumen ? n(resumen.disponible_para_retirar) : total
 
   return (
     <>
@@ -293,16 +310,25 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
-        <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="mt-4 grid grid-cols-3 gap-2">
           <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-3">
-            <div className="text-xs text-zinc-500">Disponible</div>
-            <div className="mt-1 text-lg font-semibold text-emerald-300">{formatMoney(disponible)} Bs</div>
+            <div className="text-xs text-zinc-500">Saldo total</div>
+            <div className="mt-1 text-base font-semibold text-emerald-300">{formatMoney(total)} Bs</div>
           </div>
           <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-3">
-            <div className="text-xs text-zinc-500">Bloqueado</div>
-            <div className="mt-1 text-lg font-semibold text-amber-300">{formatMoney(bloqueado)} Bs</div>
+            <div className="text-xs text-zinc-500">En pujas</div>
+            <div className="mt-1 text-base font-semibold text-amber-300">{formatMoney(comprometido)} Bs</div>
+          </div>
+          <div className="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-3">
+            <div className="text-xs text-zinc-500">Puedes retirar</div>
+            <div className="mt-1 text-base font-semibold text-sky-300">{formatMoney(retirable)} Bs</div>
           </div>
         </div>
+        {comprometido > 0 ? (
+          <div className="mt-2 text-[11px] text-zinc-500">
+            Lo que tienes en pujas sigue siendo tuyo hasta que cierre el remate. Se cobra al cerrar.
+          </div>
+        ) : null}
 
         <div className="mt-3 grid grid-cols-3 gap-2">
           <Link

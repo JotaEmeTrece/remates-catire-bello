@@ -14,7 +14,8 @@ import { CornerLogo } from "@/app/components/BrandLogo"
  */
 type WalletRow = {
   saldo_disponible: string | number
-  saldo_bloqueado: string | number
+  comprometido: string | number
+  disponible_para_retirar: string | number
 }
 
 type WithdrawRow = {
@@ -73,7 +74,7 @@ export default function RetirarPage() {
       setWallet(null)
     } else {
       const first = Array.isArray(wData) ? wData[0] : null
-      setWallet(first ? { saldo_disponible: first.saldo_disponible, saldo_bloqueado: first.saldo_bloqueado } : null)
+      setWallet(first ?? null)
     }
 
     const { data: list, error: listErr } = await supabase
@@ -102,8 +103,20 @@ export default function RetirarPage() {
     if (!Number.isFinite(amount) || amount <= 0) return setError("Monto inválido.")
     if (!telefonoDestino.trim()) return setError("Teléfono destino requerido.")
 
-    const disponible = wallet ? n(wallet.saldo_disponible) : 0
-    if (amount > disponible) return setError("Saldo insuficiente para este retiro.")
+    // Se valida contra lo RETIRABLE, no contra el saldo total. El dinero
+    // comprometido en pujas que el usuario lidera sigue en su saldo hasta que
+    // cierra el remate, pero no se puede sacar: si se pudiera, el cobro del
+    // cierre se quedaria sin fondos. La base lo rechaza igual; esto es solo
+    // para dar el mensaje antes de gastar el viaje.
+    const retirableAhora = wallet ? n(wallet.disponible_para_retirar) : 0
+    const comprometidoAhora = wallet ? n(wallet.comprometido) : 0
+    if (amount > retirableAhora) {
+      return setError(
+        comprometidoAhora > 0
+          ? `Solo puedes retirar ${formatMoney(retirableAhora)} Bs. Tienes ${formatMoney(comprometidoAhora)} Bs comprometidos en pujas que lideras.`
+          : "Saldo insuficiente para este retiro."
+      )
+    }
 
     setSaving(true)
 
@@ -166,8 +179,9 @@ export default function RetirarPage() {
     )
   }
 
-  const disponible = wallet ? n(wallet.saldo_disponible) : 0
-  const bloqueado = wallet ? n(wallet.saldo_bloqueado) : 0
+  const total = wallet ? n(wallet.saldo_disponible) : 0
+  const comprometido = wallet ? n(wallet.comprometido) : 0
+  const retirable = wallet ? n(wallet.disponible_para_retirar) : 0
 
   return (
     <>
@@ -186,8 +200,9 @@ export default function RetirarPage() {
         <p className="mt-2 text-sm text-gray-300">Solicita tu retiro y el admin lo procesa manualmente.</p>
 
         <div className="mt-4 rounded-2xl bg-gray-900/60 p-4 ring-1 ring-white/10">
-          <div className="text-sm text-gray-400">Disponible: Bs {formatMoney(disponible)}</div>
-          <div className="mt-2 text-xs text-gray-400">Bloqueado: Bs {formatMoney(bloqueado)}</div>
+          <div className="text-sm text-gray-400">Saldo total: Bs {formatMoney(total)}</div>
+          <div className="mt-1 text-sm text-amber-300">Comprometido en pujas: Bs {formatMoney(comprometido)}</div>
+          <div className="mt-1 text-base font-semibold text-sky-300">Puedes retirar: Bs {formatMoney(retirable)}</div>
         </div>
 
         <form onSubmit={onSubmit} className="mt-5 space-y-3 rounded-2xl bg-gray-900/60 p-4 ring-1 ring-white/10">
