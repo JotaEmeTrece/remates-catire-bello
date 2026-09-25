@@ -135,6 +135,140 @@ function n(v: string | number | null | undefined) {
   return Number.isFinite(x) ? x : 0
 }
 
+// Miles con punto y sin decimales: los precios de un remate son enteros.
+function formatoBs(v: number) {
+  if (!Number.isFinite(v)) return "0"
+  return Math.round(v).toLocaleString("es-VE")
+}
+
+// ===========================================================================
+//  LA ESCALERA DE INCREMENTOS
+//
+//  Antes esto eran 10 filas que el admin escribia a mano, arrancando en 0
+//  aunque ningun caballo saliera nunca por debajo del precio de salida: la
+//  mitad de los tramos no se usaban jamas.
+//
+//  Ahora la escalera se GENERA a partir del precio de salida. El admin elige
+//  el ritmo y ve la simulacion; solo baja a la tabla si quiere algo raro.
+//
+//  Los tramos son multiplos del precio de salida (1x, 5x, 10x, 50x, 100x) y
+//  el incremento de cada tramo es una fraccion del mismo precio de salida.
+//  Asi la escalera se recalcula sola si cambias la salida, y el incremento
+//  siempre queda entre el 5% y el 50% del precio en curso — que es el rango
+//  en que una subasta avanza sin eternizarse ni pegar saltos brutales.
+// ===========================================================================
+
+export type RitmoEscalera = "suave" | "normal" | "agresiva"
+
+// Los tramos, en multiplos del precio de salida. El ultimo no tiene techo.
+const TRAMOS_EN_MULTIPLOS: Array<{ desde: number; hasta: number | null }> = [
+  { desde: 1, hasta: 5 },
+  { desde: 5, hasta: 10 },
+  { desde: 10, hasta: 50 },
+  { desde: 50, hasta: 100 },
+  { desde: 100, hasta: null },
+]
+
+// El incremento de cada tramo, tambien en multiplos del precio de salida.
+const FACTORES_POR_RITMO: Record<RitmoEscalera, number[]> = {
+  suave: [0.25, 0.5, 1, 2.5, 5],
+  normal: [0.5, 1, 2.5, 5, 10],
+  agresiva: [1, 2, 5, 10, 20],
+}
+
+export const ETIQUETA_RITMO: Record<RitmoEscalera, string> = {
+  suave: "Suave - muchas pujas, sube despacio",
+  normal: "Normal - recomendado",
+  agresiva: "Agresiva - pocas pujas, sube rapido",
+}
+
+// Redondea a un numero "de los que uno diria en voz alta": 1, 2, 5, 10, 20,
+// 50, 100... Con salida 100 no hace falta, pero con salida 75 evita que el
+// incremento salga en 37,5.
+function aNumeroRedondo(v: number) {
+  if (!Number.isFinite(v) || v <= 0) return 1
+  const exp = Math.floor(Math.log10(v))
+  const base = Math.pow(10, exp)
+  // El 2,5 no sobra: sin el, 250 se redondeaba a 200. Y 250 es tan
+  // "numero que uno dice en voz alta" como 200.
+  const candidatos = [base, base * 2, base * 2.5, base * 5, base * 10]
+  let mejor = candidatos[0]
+  for (const c of candidatos) {
+    if (Math.abs(c - v) < Math.abs(mejor - v)) mejor = c
+  }
+  return mejor
+}
+
+export function generarEscalera(salida: number, ritmo: RitmoEscalera): PriceRuleDraft[] {
+  const s = salida > 0 ? salida : 100
+  const factores = FACTORES_POR_RITMO[ritmo]
+  return TRAMOS_EN_MULTIPLOS.map((t, i) => ({
+    tempId: uid(),
+    min_precio: String(Math.round(t.desde * s)),
+    max_precio: t.hasta === null ? "" : String(Math.round(t.hasta * s)),
+    incremento: String(aNumeroRedondo(factores[i] * s)),
+  }))
+}
+
+// Que incremento aplica a este precio. MISMA regla que _incremento_aplicable()
+// en la base: el tramo cuyo `desde` es el mayor que no pasa del precio.
+function incrementoPara(precio: number, reglas: PriceRuleDraft[], respaldo: number) {
+  let elegido: number | null = null
+  let mejorDesde = -1
+  for (const r of reglas) {
+    const desde = n(r.min_precio)
+    const hasta = r.max_precio.trim() ? n(r.max_precio) : null
+    if (precio >= desde && (hasta === null || precio < hasta)) {
+      if (desde > mejorDesde) {
+        mejorDesde = desde
+        elegido = n(r.incremento)
+      }
+    }
+  }
+  return elegido && elegido > 0 ? elegido : respaldo
+}
+
+// La simulacion que hace entendible la escalera: los primeros N precios.
+export function simularPujas(
+  salida: number,
+  reglas: PriceRuleDraft[],
+  respaldo: number,
+  cuantas = 10
+) {
+  const pasos: number[] = []
+  let p = salida > 0 ? salida : 0
+  if (p <= 0) return pasos
+  pasos.push(p)
+  for (let i = 0; i < cuantas; i++) {
+    const inc = incrementoPara(p, reglas, respaldo)
+    if (!(inc > 0)) break
+    p = p + inc
+    pasos.push(p)
+  }
+  return pasos
+}
+
+// Cuantas pujas hacen falta para llegar a `objetivo`. Devuelve null si con
+// esta escalera no se llega nunca (incremento cero o negativo).
+export function pujasHasta(
+  salida: number,
+  reglas: PriceRuleDraft[],
+  respaldo: number,
+  objetivo: number
+) {
+  let p = salida > 0 ? salida : 0
+  if (p <= 0 || objetivo <= p) return 0
+  let cuenta = 0
+  while (p < objetivo && cuenta < 5000) {
+    const inc = incrementoPara(p, reglas, respaldo)
+    if (!(inc > 0)) return null
+    p += inc
+    cuenta++
+  }
+  return cuenta >= 5000 ? null : cuenta
+}
+
+
 export default function AdminCrearRematePage() {
   const router = useRouter()
 
@@ -170,10 +304,10 @@ export default function AdminCrearRematePage() {
   // =========================
   // Form Remate (remates)
   // =========================
-  const [incrementoMinimo, setIncrementoMinimo] = useState("20")
+  const [incrementoMinimo, setIncrementoMinimo] = useState("50")
   // Solo vive en el formulario: precarga el precio de salida de cada caballo.
   // NO se guarda en la base. Esa columna quedo sin uso en la tarea 2.17.
-  const [salidaPorDefecto, setSalidaPorDefecto] = useState("40")
+  const [salidaPorDefecto, setSalidaPorDefecto] = useState("100")
   const [porcentajeCasa, setPorcentajeCasa] = useState("25")
   const [remateTipo, setRemateTipo] = useState<"vivo" | "adelantado">("vivo")
   const [opensDD, setOpensDD] = useState(nowCaracas.dd)
@@ -211,29 +345,68 @@ export default function AdminCrearRematePage() {
   // Caballos (horses) - lista dinámica
   // NOTA: precio_salida es obligatorio (precio inicial del caballo).
   // =========================
-  const [horses, setHorses] = useState<HorseDraft[]>([
-    { tempId: uid(), numero: "1", nombre: "Relámpago", jinete: "J1", comentarios: "Caballo veloz", precio_salida: "60" },
-    { tempId: uid(), numero: "2", nombre: "Tormenta", jinete: "J2", comentarios: "", precio_salida: "60" },
-  ])
+  // Sin caballos semilla. Antes nacian dos, "Relampago" y "Tormenta", con un
+  // precio de 60 escrito a mano que no tenia nada que ver con el precio de
+  // salida del remate. De ahi venia que la pantalla dijera 40 y los caballos
+  // 60: no era un bug de logica, era que no habia logica — eran dos numeros
+  // sueltos sin ninguna relacion.
+  const [horses, setHorses] = useState<HorseDraft[]>([])
 
   // =========================
   // Reglas de precio (default y por caballo)
   // =========================
-  const [defaultRules, setDefaultRules] = useState<PriceRuleDraft[]>([
-    { tempId: uid(), min_precio: "0", max_precio: "100", incremento: "20" },
-    { tempId: uid(), min_precio: "100", max_precio: "300", incremento: "30" },
-    { tempId: uid(), min_precio: "300", max_precio: "600", incremento: "40" },
-    { tempId: uid(), min_precio: "600", max_precio: "1000", incremento: "50" },
-    { tempId: uid(), min_precio: "1000", max_precio: "2000", incremento: "100" },
-    { tempId: uid(), min_precio: "2000", max_precio: "5000", incremento: "200" },
-    { tempId: uid(), min_precio: "5000", max_precio: "10000", incremento: "300" },
-    { tempId: uid(), min_precio: "10000", max_precio: "20000", incremento: "500" },
-    { tempId: uid(), min_precio: "20000", max_precio: "30000", incremento: "800" },
-    { tempId: uid(), min_precio: "30000", max_precio: "", incremento: "1000" },
-  ])
+  const [ritmo, setRitmo] = useState<RitmoEscalera>("normal")
+  const [escaleraTocadaAMano, setEscaleraTocadaAMano] = useState(false)
+  const [verTablaEscalera, setVerTablaEscalera] = useState(false)
+  const [defaultRules, setDefaultRules] = useState<PriceRuleDraft[]>(() =>
+    generarEscalera(100, "normal")
+  )
   const [useDefaultRules, setUseDefaultRules] = useState(true)
   const [horseRulesEnabled, setHorseRulesEnabled] = useState<Record<string, boolean>>({})
   const [horseRulesByTempId, setHorseRulesByTempId] = useState<Record<string, PriceRuleDraft[]>>({})
+
+  // =========================================================================
+  //  EL PRECIO DE SALIDA MANDA
+  //
+  //  Decision del 25/09: el precio de salida del remate es EL precio de todos
+  //  los caballos. La unica forma de que un caballo tenga otro precio es
+  //  activarle su regla individual. Asi no existe un tercer estado invisible
+  //  ("caballo que toque a mano y ya no sigue al remate") que no se vea en
+  //  pantalla.
+  //
+  //  Antes no habia ningun efecto que conectara las dos cosas: cambiabas el
+  //  precio del remate y los caballos ya creados se quedaban donde estaban.
+  // =========================================================================
+  useEffect(() => {
+    const valor = salidaPorDefecto.trim()
+    if (!valor) return
+    setHorses((prev) => {
+      if (prev.length === 0) return prev
+      if (prev.every((h) => h.precio_salida === valor)) return prev
+      return prev.map((h) => ({ ...h, precio_salida: valor }))
+    })
+  }, [salidaPorDefecto])
+
+  // La escalera se regenera sola con el precio de salida y el ritmo, salvo
+  // que la hayas editado a mano — ahi se respeta lo que escribiste.
+  useEffect(() => {
+    if (escaleraTocadaAMano) return
+    setDefaultRules(generarEscalera(n(salidaPorDefecto) || 100, ritmo))
+  }, [salidaPorDefecto, ritmo, escaleraTocadaAMano])
+
+  // La simulacion: lo que de verdad hace entendible la escalera.
+  const simulacion = useMemo(
+    () => simularPujas(n(salidaPorDefecto), useDefaultRules ? defaultRules : [], n(incrementoMinimo), 9),
+    [salidaPorDefecto, defaultRules, useDefaultRules, incrementoMinimo]
+  )
+  const pujasPara1000 = useMemo(
+    () => pujasHasta(n(salidaPorDefecto), useDefaultRules ? defaultRules : [], n(incrementoMinimo), 1000),
+    [salidaPorDefecto, defaultRules, useDefaultRules, incrementoMinimo]
+  )
+  const pujasPara5000 = useMemo(
+    () => pujasHasta(n(salidaPorDefecto), useDefaultRules ? defaultRules : [], n(incrementoMinimo), 5000),
+    [salidaPorDefecto, defaultRules, useDefaultRules, incrementoMinimo]
+  )
 
   // =========================
   // Guard: asegurar que es admin
@@ -609,7 +782,9 @@ export default function AdminCrearRematePage() {
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-50 px-4 py-6">
-      <div className="mx-auto w-full max-w-md">
+      {/* En movil se ve igual que antes; en PC deja de ser una columna
+          de 448px con una rejilla de 3 columnas apretada adentro. */}
+      <div className="mx-auto w-full max-w-md md:max-w-3xl">
         {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold">Admin - Crear remate</h1>
@@ -771,24 +946,31 @@ export default function AdminCrearRematePage() {
           <div className="mt-3 space-y-3">
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="text-sm text-zinc-200">Salida por defecto</label>
+                <label className="text-sm text-zinc-200">Precio de salida</label>
                 <input
                   inputMode="decimal"
                   value={salidaPorDefecto}
                   onChange={(e) => setSalidaPorDefecto(e.target.value)}
                   className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="40"
+                  placeholder="100"
                 />
+                <div className="mt-1 text-[11px] text-zinc-500">Salen todos los caballos</div>
               </div>
               <div>
-                <label className="text-sm text-zinc-200">Incremento</label>
+                {/* Este campo SOLO se usa cuando no hay escalera. Con la
+                    escalera puesta nunca aplica, porque siempre hay un tramo
+                    que cubre el precio. Antes decia "Incremento" a secas y
+                    parecia el incremento del remate — cambiarlo no hacia nada
+                    y no habia forma de saber por que. */}
+                <label className="text-sm text-zinc-200">Incremento fijo</label>
                 <input
                   inputMode="decimal"
                   value={incrementoMinimo}
                   onChange={(e) => setIncrementoMinimo(e.target.value)}
                   className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="20"
+                  placeholder="50"
                 />
+                <div className="mt-1 text-[11px] text-zinc-500">Solo si apagas la escalera</div>
               </div>
               <div>
                 <label className="text-sm text-zinc-200">% casa</label>
@@ -917,71 +1099,177 @@ export default function AdminCrearRematePage() {
             </div>
           </div>
         </section>
-        {/* Reglas default */}
+        {/* Como sube el precio */}
         <section className="mt-3 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold">3) Reglas default</h2>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-base font-semibold">3) Cómo sube el precio</h2>
             <label className="text-xs text-zinc-300 flex items-center gap-2">
               <input
                 type="checkbox"
                 checked={useDefaultRules}
                 onChange={(e) => setUseDefaultRules(e.target.checked)}
               />
-              Usar reglas default
+              Usar escalera
             </label>
           </div>
 
           {!useDefaultRules ? (
-            <div className="mt-2 text-xs text-zinc-400">Sin reglas default. Cada caballo debe tener reglas propias.</div>
+            <div className="mt-3 rounded-xl bg-zinc-950/40 border border-zinc-800 p-3">
+              <div className="text-sm text-zinc-200">Incremento fijo de {formatoBs(n(incrementoMinimo))} Bs</div>
+              <div className="mt-1 text-xs text-zinc-400">
+                Sin escalera, el precio sube siempre lo mismo, vaya el caballo en 100 o en 10.000. El valor es el
+                &quot;incremento mínimo&quot; que pusiste arriba.
+              </div>
+            </div>
           ) : (
             <>
-              <div className="mt-3 grid grid-cols-4 gap-2 text-xs text-zinc-500">
-                <div>Desde</div>
-                <div>Hasta (opcional)</div>
-                <div>Incremento</div>
-                <div>Acción</div>
-              </div>
-
-              <div className="mt-2 space-y-2">
-                {defaultRules.map((r) => (
-                  <div key={r.tempId} className="grid grid-cols-4 gap-2">
+              <div className="mt-3 space-y-2">
+                {(["suave", "normal", "agresiva"] as RitmoEscalera[]).map((op) => (
+                  <label
+                    key={op}
+                    className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-sm cursor-pointer ${
+                      ritmo === op && !escaleraTocadaAMano
+                        ? "bg-zinc-950/70 border-zinc-600"
+                        : "bg-zinc-950/40 border-zinc-800"
+                    }`}
+                  >
                     <input
-                      inputMode="decimal"
-                      value={r.min_precio}
-                      onChange={(e) => updateRule(setDefaultRules, r.tempId, { min_precio: e.target.value })}
-                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                      placeholder="Min"
+                      type="radio"
+                      name="ritmo"
+                      className="mt-1"
+                      checked={ritmo === op && !escaleraTocadaAMano}
+                      onChange={() => {
+                        setEscaleraTocadaAMano(false)
+                        setRitmo(op)
+                      }}
                     />
-                    <input
-                      inputMode="decimal"
-                      value={r.max_precio}
-                      onChange={(e) => updateRule(setDefaultRules, r.tempId, { max_precio: e.target.value })}
-                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                      placeholder="Max"
-                    />
-                    <input
-                      inputMode="decimal"
-                      value={r.incremento}
-                      onChange={(e) => updateRule(setDefaultRules, r.tempId, { incremento: e.target.value })}
-                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                      placeholder="Incremento"
-                    />
-                    <button
-                      onClick={() => removeRule(setDefaultRules, r.tempId)}
-                      className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                    >
-                      Quitar
-                    </button>
-                  </div>
+                    <span className="text-zinc-200">{ETIQUETA_RITMO[op]}</span>
+                  </label>
                 ))}
               </div>
 
+              {escaleraTocadaAMano ? (
+                <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2">
+                  <span className="text-xs text-amber-100">Escalera personalizada</span>
+                  <button
+                    type="button"
+                    onClick={() => setEscaleraTocadaAMano(false)}
+                    className="text-xs text-amber-100 underline underline-offset-4"
+                  >
+                    Volver a la automática
+                  </button>
+                </div>
+              ) : null}
+
+              {/* LA SIMULACION. Esto es lo que hace entendible la escalera:
+                  cuatro columnas de numeros no te dicen nunca como se siente
+                  pujar; una lista de precios si. */}
+              <div className="mt-3 rounded-xl bg-zinc-950/40 border border-zinc-800 p-3">
+                <div className="text-xs text-zinc-500">Así se vería una subasta</div>
+                {simulacion.length > 1 ? (
+                  <>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-sm">
+                      {simulacion.map((v, i) => (
+                        <span key={i} className="flex items-center gap-1">
+                          {i > 0 ? <span className="text-zinc-600">→</span> : null}
+                          <span className={i === 0 ? "font-semibold text-zinc-100" : "text-zinc-300"}>
+                            {formatoBs(v)}
+                          </span>
+                        </span>
+                      ))}
+                      <span className="text-zinc-600">→ …</span>
+                    </div>
+                    <div className="mt-2 text-[11px] text-zinc-400">
+                      {pujasPara1000 !== null ? <>Llegar a 1.000 Bs: <b>{pujasPara1000} pujas</b>. </> : null}
+                      {pujasPara5000 !== null ? <>Llegar a 5.000 Bs: <b>{pujasPara5000} pujas</b>.</> : null}
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-2 text-sm text-zinc-500">Pon un precio de salida para ver la simulación.</div>
+                )}
+              </div>
+
               <button
-                onClick={() => addRule(setDefaultRules)}
-                className="mt-3 rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                type="button"
+                onClick={() => setVerTablaEscalera((v) => !v)}
+                className="mt-3 text-xs text-zinc-300 underline underline-offset-4"
               >
-                + Agregar rango
+                {verTablaEscalera ? "Ocultar los tramos" : "Ver y editar los tramos"}
               </button>
+
+              {verTablaEscalera ? (
+                <div className="mt-3 space-y-2">
+                  {/* Una tarjeta por tramo en vez de una rejilla de 4 columnas:
+                      la rejilla se salia del contenedor en pantallas angostas. */}
+                  {defaultRules.map((r, i) => (
+                    <div key={r.tempId} className="rounded-xl bg-zinc-950/40 border border-zinc-800 p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-zinc-500">Tramo {i + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEscaleraTocadaAMano(true)
+                            removeRule(setDefaultRules, r.tempId)
+                          }}
+                          className="text-[11px] text-zinc-400 underline underline-offset-4"
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                      <div className="mt-2 grid grid-cols-3 gap-2">
+                        <label className="block">
+                          <span className="block text-[11px] text-zinc-500">Desde</span>
+                          <input
+                            inputMode="decimal"
+                            value={r.min_precio}
+                            onChange={(e) => {
+                              setEscaleraTocadaAMano(true)
+                              updateRule(setDefaultRules, r.tempId, { min_precio: e.target.value })
+                            }}
+                            className="mt-1 w-full rounded-lg bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="block text-[11px] text-zinc-500">Hasta</span>
+                          <input
+                            inputMode="decimal"
+                            value={r.max_precio}
+                            onChange={(e) => {
+                              setEscaleraTocadaAMano(true)
+                              updateRule(setDefaultRules, r.tempId, { max_precio: e.target.value })
+                            }}
+                            placeholder="sin tope"
+                            className="mt-1 w-full rounded-lg bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="block text-[11px] text-zinc-500">Sube de</span>
+                          <input
+                            inputMode="decimal"
+                            value={r.incremento}
+                            onChange={(e) => {
+                              setEscaleraTocadaAMano(true)
+                              updateRule(setDefaultRules, r.tempId, { incremento: e.target.value })
+                            }}
+                            className="mt-1 w-full rounded-lg bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEscaleraTocadaAMano(true)
+                      addRule(setDefaultRules)
+                    }}
+                    className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+                  >
+                    + Agregar tramo
+                  </button>
+                </div>
+              ) : null}
             </>
           )}
         </section>
@@ -996,6 +1284,13 @@ export default function AdminCrearRematePage() {
               + Agregar caballo
             </button>
           </div>
+
+          {horses.length === 0 ? (
+            <div className="mt-3 rounded-xl bg-zinc-950/40 border border-zinc-800 p-3 text-sm text-zinc-400">
+              Todavía no hay caballos. Agrégalos con el botón de arriba; cada uno sale en{" "}
+              <b className="text-zinc-200">{formatoBs(n(salidaPorDefecto))} Bs</b>, el precio de salida del remate.
+            </div>
+          ) : null}
 
           <div className="mt-3 space-y-3">
             {horses.map((h) => (
@@ -1052,7 +1347,7 @@ export default function AdminCrearRematePage() {
                       value={h.precio_salida}
                       onChange={(e) => updateHorse(h.tempId, { precio_salida: e.target.value })}
                       className="mt-1 w-full rounded-xl bg-zinc-900/40 border border-zinc-800 px-3 py-2 text-sm"
-                      placeholder={salidaPorDefecto || "60"}
+                      placeholder={salidaPorDefecto || "100"}
                     />
                   </div>
                   <div>

@@ -54,6 +54,19 @@ La segunda línea averigua cómo se llama el contenedor de la base que levantó 
 
 Si `$db` sale vacío, el contenedor no está arriba: `npx supabase start` primero.
 
+> **`supabase start` y `supabase db start` no son lo mismo.**
+>
+> - `npx supabase start` levanta **todo el stack local** (Postgres, API, Studio,
+>   Auth, Storage) y por eso imprime el banner con la API URL, los puertos y las
+>   llaves `anon` / `service_role`.
+> - `npx supabase db start` levanta **solo el contenedor de Postgres**. No
+>   imprime banner porque no hay API ni llaves que anunciar. Si la base ya
+>   estaba arriba responde `Postgres database is already running.` y no hace
+>   nada más.
+>
+> Para correr el arnés basta con la base, así que `db start` sirve. Si quieres
+> el banner o abrir Studio, es `start`.
+
 **No se usa `psql` suelto** (no está instalado en Windows) ni `npx supabase db query` (no devuelve la tabla de resultados del arnés). El `psql` que corre es el que vive dentro del contenedor.
 
 **Marcador esperado al 23/09/2026: 12 en verde, 3 en rojo, de 15.** Los tres rojos son defectos reproducidos a propósito — tareas 1.1, 1.2 y 1.3, absorbidas por el bloque 2. Si te da otro número, algo cambió: compáralo contra la tabla de la sección 0.3 de `BACKLOG_FASE1_FIXES.md`.
@@ -93,12 +106,35 @@ Después de eso, `db push` aplica únicamente lo que de verdad falta.
 
 > ### Siempre `npx supabase`, nunca `supabase` a secas
 >
-> El CLI está instalado como **dependencia del proyecto** (`npm install supabase --save-dev`),
-> no global. Vive en `node_modules/.bin`, y `npx` es lo que lo encuentra ahí.
-> Por eso `supabase start` da "no reconocido" y `npx supabase start` funciona.
+> **Corregido el 25/09/2026.** Este bloque decía que el CLI estaba instalado
+> como dependencia del proyecto. **Es falso:** `supabase` no está en
+> `package.json` ni en `pnpm-lock.yaml`. Nunca lo estuvo.
 >
-> Es el comportamiento correcto: así la versión del CLI queda fijada en
-> `package.json` y no depende de lo que cada máquina tenga instalado.
+> Lo que pasa de verdad: `npx` no lo encuentra en `node_modules`, así que lo
+> **descarga del registro**. Por eso a veces aparece
+> `Need to install the following packages: supabase@2.x.x`. Cuando no aparece
+> es porque quedó en la caché de npx, no porque esté en el proyecto.
+>
+> **Esto importa:** sin versión fijada, cada máquina —y cada licenciatario—
+> corre el CLI que sea `latest` ese día. Un cambio de versión mayor puede
+> cambiar cómo se aplican las migraciones.
+>
+> **Se decidió NO meterlo como devDependency**, aunque eso arreglaría el pin:
+> el paquete `supabase` descarga un binario de ~40 MB al instalarse, y Vercel
+> instala las devDependencies en cada build. Sería pagar ese peso en cada
+> deploy por una herramienta que solo se usa desde el escritorio y que el
+> build no toca jamás.
+>
+> **La regla entonces es fijar la versión en el comando**, no en el
+> `package.json`. La versión con la que se aplicó todo el bloque 1 y 2 es la
+> **2.118.0**. Si necesitas reproducir exactamente:
+>
+> ```powershell
+> npx supabase@2.118.0 db reset
+> ```
+>
+> Para el día a día `npx supabase` basta; comprueba con `npx supabase --version`
+> si algo se comporta raro.
 
 ```powershell
 # 1. Regenerar el baseline SOLO con public (ver COMO_HACER_EL_BASELINE.md)

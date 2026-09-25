@@ -510,6 +510,63 @@ Prueba P32 en el arnés: al usuario normal lo rechaza, al admin le responde.
 
 ---
 
+### 2.23 · La pantalla de crear remate: precios, escalera y ancho — ✅ **HECHO 25/09/2026**
+
+Encontrado por Jota probando a mano, aislando una variable a la vez: crear un caballo, cambiar el default, borrarlo, crear otro. Aisló el defecto sin mirar el código.
+
+**Lo que estaba mal, y no era un bug de lógica: era que no había lógica.** Tres números escritos a mano en sitios distintos y sin ninguna relación entre sí — el remate decía 40 (`salidaPorDefecto`), los dos caballos semilla nacían en 60 (literal en el array), y el caballo nuevo sí leía la variable. Cambiar el precio del remate no movía a los caballos ya creados porque no existía ningún efecto que los conectara.
+
+Arreglado:
+
+| Antes | Ahora |
+|---|---|
+| Salida 40, incremento 20 | Salida **100**, incremento fijo **50** |
+| Dos caballos semilla ("Relámpago", "Tormenta") en 60 | **Ninguno.** Lista vacía con su mensaje |
+| Cambiar el precio del remate no movía a los caballos | **Se resincronizan todos.** La única excepción es un caballo con regla individual activada |
+| Escalera: 10 tramos escritos a mano, arrancando en 0 | **5 tramos generados** a partir del precio de salida y del ritmo elegido |
+| Cuatro columnas de números | **Simulación en vivo**: `100 → 150 → 200 → …` y "llegar a 1.000: 13 pujas" |
+| "Sin reglas default. Cada caballo debe tener reglas propias" — **falso** | "Incremento fijo de 50 Bs", que es lo que de verdad pasa |
+| `max-w-md` con una rejilla de 4 columnas adentro | `max-w-md md:max-w-3xl`, y tarjeta por tramo en vez de rejilla |
+
+**Decisión de diseño (25/09):** el precio de salida del remate **es** el precio de todos los caballos. La única forma de que uno tenga otro precio es activarle la regla individual. No existe un tercer estado invisible — "caballo que toqué a mano y ya no sigue al remate" — porque un estado que no se ve en pantalla es un estado que se olvida.
+
+**La escalera se genera, no se escribe.** Tramos en múltiplos del precio de salida (1×, 5×, 10×, 50×, 100×) e incrementos en fracciones del mismo. Así el incremento queda siempre entre el 5% y el 50% del precio en curso, y la escalera entera se recalcula sola si cambias la salida. Tres ritmos: suave / normal / agresiva. La tabla manual sigue ahí detrás de "Ver y editar los tramos", y al tocarla la escalera queda marcada como personalizada, con un botón para volver a la automática.
+
+**Por qué se dejó la escalera y no un incremento plano:** Jota no sabe todavía en qué rango se mueven los precios reales —la referencia son remates por WhatsApp que nunca ha visto de cerca— y un incremento plano es una apuesta a que los precios se queden donde uno cree. La escalera funciona sin acertar. Cuando haya remates reales habrá datos, y ahí se recalibra con evidencia.
+
+---
+
+### 2.24 · El ancho en PC es incoherente en toda la app — **pendiente, va con el rediseño de la página**
+
+No es que la app sea angosta: es que **no hay criterio**. `recargas` y `retiros` están en `max-w-3xl`/`4xl`, `remates/[id]` en `5xl`, y `contabilidad`, `admin`, `crear-remate` y todo el lado del usuario en `max-w-md`. En celular no se nota porque todas se ven igual; en PC se ve el desorden.
+
+Va junto con la conversación de producto pendiente: qué hace el sitio de lunes a viernes. Un producto que solo sirve sábado y domingo es difícil de licenciar.
+
+---
+
+### 2.25 · Realtime: nadie lo ha mirado nunca — **pendiente, bloque 3**
+
+Hay que verificar qué tablas tienen realtime activo y cuáles lo necesitan de verdad. **Es más delicado de lo que parece: realtime respeta la RLS**, así que una tabla publicada con una política floja transmite filas a quien no debería. Va junto con la auditoría de políticas del bloque 3, no antes.
+
+(La concurrencia, la otra mitad de esta preocupación, **ya está hecha y probada**: candados por usuario en las cinco funciones que mueven dinero, demostrado con dos conexiones reales. Lo que falta son los caminos que no pasan por RPC — o sea, la tarea 3.2.)
+
+---
+
+### 2.26 · Documento del modelo de saldo, en dos versiones — **pendiente, pedido por Jota el 25/09**
+
+Pedido después de un ejercicio en voz alta que reveló que su modelo mental seguía en la v1: describió el baile de bloquear/desbloquear/devolver que quitamos en el bloque 2.
+
+Hacen falta **dos documentos**:
+
+1. **Para Jota** — en los dos idiomas a la vez: la explicación en cristiano y, al lado, qué hace el sistema por dentro. Que sirva para entenderlo y para explicárselo a alguien.
+2. **Para el licenciatario** — solo en cristiano. Sin una línea de SQL. Qué ve su usuario, qué pasa con el dinero en cada momento, por qué el saldo disponible no baja al pujar, qué significa cada número del panel.
+
+**Cuándo:** después de este cambio de la escalera y antes del bloque 3, junto con el `ADR.md`. Antes no: documentar un comportamiento que está a punto de cambiar es escribir para reescribir.
+
+**El contenido mínimo, que ya está probado en el arnés y no hay que inventarlo:** durante el remate no se mueve un solo peso; el compromiso es una resta, no una transferencia; el dinero se mueve una sola vez, al cerrar; retirable = disponible − comprometido; y qué pasa cuando subes tu propia puja (se reemplaza, no se suma).
+
+---
+
 ## Bloque 3 — Blindaje de escritura
 
 > Depende de: bloques 0-2. **Es el bloque que convierte la app en algo que puede operar alguien que no seas tú.**
