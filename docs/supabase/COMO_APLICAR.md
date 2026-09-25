@@ -133,8 +133,43 @@ Después de eso, `db push` aplica únicamente lo que de verdad falta.
 > npx supabase@2.118.0 db reset
 > ```
 >
-> Para el día a día `npx supabase` basta; comprueba con `npx supabase --version`
-> si algo se comporta raro.
+> **Resuelto el 25/09/2026 con scripts en `package.json`.** La versión queda
+> fijada donde se usa, sin meter el CLI como dependencia:
+>
+> ```json
+> "db:start": "npx -y supabase@2.118.0 start",
+> "db:stop": "npx -y supabase@2.118.0 stop",
+> "db:reset": "npx -y supabase@2.118.0 db reset",
+> "db:push:produccion": "npx -y supabase@2.118.0 db push"
+> ```
+>
+> **Úsalos siempre**, en vez de escribir `npx supabase ...` a mano:
+>
+> | comando | qué hace |
+> |---|---|
+> | `pnpm db:start` | Levanta el stack local completo, con banner de llaves y puertos |
+> | `pnpm db:stop` | Lo apaga |
+> | `pnpm db:reset` | Borra la base local y reaplica todas las migraciones |
+> | `pnpm db:push:produccion` | **Toca producción.** Aplica las migraciones que falten |
+>
+> Tres detalles que no son capricho:
+>
+> - **El `-y`** salta el prompt `Ok to proceed?` de npx. Sin él, el script se
+>   queda colgado esperando una respuesta que nadie le va a dar.
+> - **El nombre largo de `db:push:produccion`** es a propósito. Pinear la
+>   versión de `db push` es lo más importante de todo, pero convertir el
+>   comando que toca producción en algo de ocho letras baja la fricción justo
+>   donde la fricción es sana. No se escribe por accidente ni se confunde con
+>   `db:reset`.
+> - **Pinear la versión no te protege de una migración rota.** Si el SQL está
+>   mal, falla con la 2.118.0 igual que con cualquier otra. Lo que evita es que
+>   *el CLI* cambie de comportamiento entre versiones: que el `db push` de
+>   dentro de seis meses no haga algo distinto al de hoy con los mismos
+>   archivos.
+>
+> El arnés no tiene script porque la línea que busca el contenedor de Docker es
+> PowerShell (`$db = docker ps --filter ...`) y los scripts de npm corren por
+> `cmd`. Se queda como está, más arriba en este documento.
 
 ```powershell
 # 1. Regenerar el baseline SOLO con public (ver COMO_HACER_EL_BASELINE.md)
