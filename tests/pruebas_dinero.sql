@@ -1586,6 +1586,62 @@ exception when others then
 end $$;
 
 
+-- ============================================================================
+--  P33 - Ninguna RPC peligrosa queda al alcance de anon ni de authenticated
+--
+--  Esta prueba NO ejercita los permisos: el arnes corre como `postgres`, que
+--  es superusuario y se salta cualquier ACL. Lo que hace es CONSULTAR el ACL
+--  con has_function_privilege(), que si funciona desde postgres.
+--
+--  Es la unica forma de probar esto sin abrir una conexion con otro rol. Vale
+--  la pena porque `create or replace function` NO toca los permisos: los
+--  grants de la baseline sobrevivieron intactos a todo el bloque 1 y 2 aunque
+--  los cuerpos se reescribieron enteros. Revisar el cuerpo no basta.
+-- ============================================================================
+do $$
+declare
+  v_auto_anon   boolean; v_auto_auth   boolean;
+  v_log_anon    boolean; v_log_auth    boolean;
+  v_comp_auth   boolean;
+  v_resumen_existe boolean;
+  v_min_anon    boolean;
+begin
+  v_auto_anon := has_function_privilege('anon',          'public.auto_cerrar_remates()', 'execute');
+  v_auto_auth := has_function_privilege('authenticated', 'public.auto_cerrar_remates()', 'execute');
+
+  v_log_anon  := has_function_privilege('anon',
+    'public.log_admin_action(uuid, text, text, text, jsonb, boolean, text)', 'execute');
+  v_log_auth  := has_function_privilege('authenticated',
+    'public.log_admin_action(uuid, text, text, text, jsonb, boolean, text)', 'execute');
+
+  v_comp_auth := has_function_privilege('authenticated', 'public.compromiso_usuario(uuid)', 'execute');
+
+  select exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'resumen_casa'
+  ) into v_resumen_existe;
+
+  -- esta SI tiene que seguir abierta: es informacion publica del remate
+  v_min_anon := has_function_privilege('anon', 'public.remate_minimos(uuid)', 'execute');
+
+  perform _p.anotar(33, 'Ninguna RPC peligrosa queda al alcance de anon ni authenticated',
+    'auto_cerrar_remates y log_admin_action cerradas a los dos; compromiso_usuario cerrada a authenticated; resumen_casa borrada; remate_minimos sigue publica',
+    (not v_auto_anon) and (not v_auto_auth)
+      and (not v_log_anon) and (not v_log_auth)
+      and (not v_comp_auth)
+      and (not v_resumen_existe)
+      and v_min_anon,
+    'auto_cerrar[anon=' || v_auto_anon::text || ',auth=' || v_auto_auth::text || ']' ||
+    ' log_admin[anon=' || v_log_anon::text || ',auth=' || v_log_auth::text || ']' ||
+    ' compromiso[auth=' || v_comp_auth::text || ']' ||
+    ' resumen_casa_existe=' || v_resumen_existe::text ||
+    ' remate_minimos[anon=' || v_min_anon::text || ']');
+exception when others then
+  perform _p.anotar(33, 'Ninguna RPC peligrosa queda al alcance de anon ni authenticated',
+    'ver arriba', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;
