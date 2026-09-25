@@ -24,3 +24,26 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ===========================================================================
+   LA MANITO EN LOS BOTONES
+
+   Tailwind v4 cambio el preflight: los <button> pasaron de `cursor: pointer`
+   a `cursor: default`, "para coincidir con el comportamiento por defecto del
+   navegador". Resultado: en TODA la app, ningun boton indica que es
+   accionable al pasarle el cursor por encima.
+
+   Lo detecto Jota el 25/09 en el enlace "Ver y editar los tramos", pero no
+   era de ese enlace: era global y llevaba ahi desde que el proyecto esta en
+   Tailwind 4.
+
+   Esta es la regla que la propia documentacion de Tailwind da para recuperar
+   el comportamiento anterior. El :not(:disabled) es importante: un boton
+   deshabilitado NO debe decir que se puede pulsar.
+   =========================================================================== */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}

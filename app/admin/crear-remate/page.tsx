@@ -382,10 +382,15 @@ export default function AdminCrearRematePage() {
     if (!valor) return
     setHorses((prev) => {
       if (prev.length === 0) return prev
-      if (prev.every((h) => h.precio_salida === valor)) return prev
-      return prev.map((h) => ({ ...h, precio_salida: valor }))
+      // El caballo con reglas propias activadas queda exento: activarlas es
+      // justamente la forma de declarar "este va por su cuenta". Si lo
+      // resincronizaramos igual, la casilla no significaria nada.
+      const alcanzados = prev.filter((h) => !horseRulesEnabled[h.tempId])
+      if (alcanzados.length === 0) return prev
+      if (alcanzados.every((h) => h.precio_salida === valor)) return prev
+      return prev.map((h) => (horseRulesEnabled[h.tempId] ? h : { ...h, precio_salida: valor }))
     })
-  }, [salidaPorDefecto])
+  }, [salidaPorDefecto, horseRulesEnabled])
 
   // La escalera se regenera sola con el precio de salida y el ritmo, salvo
   // que la hayas editado a mano — ahi se respeta lo que escribiste.
@@ -1289,6 +1294,10 @@ export default function AdminCrearRematePage() {
             <div className="mt-3 rounded-xl bg-zinc-950/40 border border-zinc-800 p-3 text-sm text-zinc-400">
               Todavía no hay caballos. Agrégalos con el botón de arriba; cada uno sale en{" "}
               <b className="text-zinc-200">{formatoBs(n(salidaPorDefecto))} Bs</b>, el precio de salida del remate.
+              <br />
+              ¿Quieres otro precio para todos? Cámbialo arriba, en <b className="text-zinc-300">2) Remate → Precio de
+              salida</b>, y los caballos se ajustan solos. Para que uno solo salga distinto, actívale sus reglas
+              propias más abajo.
             </div>
           ) : null}
 
