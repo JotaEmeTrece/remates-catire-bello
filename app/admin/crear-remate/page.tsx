@@ -364,6 +364,11 @@ export default function AdminCrearRematePage() {
   const [useDefaultRules, setUseDefaultRules] = useState(true)
   const [horseRulesEnabled, setHorseRulesEnabled] = useState<Record<string, boolean>>({})
   const [horseRulesByTempId, setHorseRulesByTempId] = useState<Record<string, PriceRuleDraft[]>>({})
+  // Ritmo de la escalera propia de cada caballo. Mismo mecanismo que la
+  // general, pero generado desde el precio de salida DE ESE caballo.
+  const [horseRitmo, setHorseRitmo] = useState<Record<string, RitmoEscalera>>({})
+  const [horseTablaAbierta, setHorseTablaAbierta] = useState<Record<string, boolean>>({})
+  const [horseEscaleraTocada, setHorseEscaleraTocada] = useState<Record<string, boolean>>({})
 
   // =========================================================================
   //  EL PRECIO DE SALIDA MANDA
@@ -398,6 +403,39 @@ export default function AdminCrearRematePage() {
     if (escaleraTocadaAMano) return
     setDefaultRules(generarEscalera(n(salidaPorDefecto) || 100, ritmo))
   }, [salidaPorDefecto, ritmo, escaleraTocadaAMano])
+
+  // Lo mismo para cada caballo con reglas propias: si cambias SU precio, su
+  // escalera se recalcula, salvo que la hayas tocado a mano. Sin esto, un
+  // caballo con reglas propias quedaba con una escalera calculada sobre un
+  // precio que ya no es el suyo.
+  useEffect(() => {
+    setHorseRulesByTempId((prev) => {
+      let cambio = false
+      const next = { ...prev }
+      for (const h of horses) {
+        if (!horseRulesEnabled[h.tempId]) continue
+        if (horseEscaleraTocada[h.tempId]) continue
+        const base = n(h.precio_salida)
+        if (!(base > 0)) continue
+        const generada = generarEscalera(base, horseRitmo[h.tempId] ?? ritmo)
+        const actual = prev[h.tempId] || []
+        const igual =
+          actual.length === generada.length &&
+          actual.every(
+            (r, i) =>
+              r.min_precio === generada[i].min_precio &&
+              r.max_precio === generada[i].max_precio &&
+              r.incremento === generada[i].incremento
+          )
+        if (!igual) {
+          next[h.tempId] = generada
+          cambio = true
+        }
+      }
+      return cambio ? next : prev
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [horses, horseRulesEnabled, horseRitmo, horseEscaleraTocada, ritmo])
 
   // La simulacion: lo que de verdad hace entendible la escalera.
   const simulacion = useMemo(
@@ -1377,9 +1415,22 @@ export default function AdminCrearRematePage() {
                       <input
                         type="checkbox"
                         checked={!!horseRulesEnabled[h.tempId]}
-                        onChange={(e) =>
-                          setHorseRulesEnabled((prev) => ({ ...prev, [h.tempId]: e.target.checked }))
-                        }
+                        onChange={(e) => {
+                          const activado = e.target.checked
+                          setHorseRulesEnabled((prev) => ({ ...prev, [h.tempId]: activado }))
+                          if (activado) {
+                            // Nace con una escalera valida, no con la tabla en
+                            // blanco: activar la casilla no puede dejarte con un
+                            // formulario que no deja guardar.
+                            const r = horseRitmo[h.tempId] ?? ritmo
+                            setHorseRitmo((prev) => ({ ...prev, [h.tempId]: r }))
+                            setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: false }))
+                            setHorseRulesByTempId((prev) => ({
+                              ...prev,
+                              [h.tempId]: generarEscalera(n(h.precio_salida) || n(salidaPorDefecto) || 100, r),
+                            }))
+                          }
+                        }}
                       />
                       Activar
                     </label>
@@ -1387,52 +1438,174 @@ export default function AdminCrearRematePage() {
 
                   {horseRulesEnabled[h.tempId] ? (
                     <div className="mt-3 space-y-2">
-                      <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 text-[11px] text-zinc-500">
-                        <div>Desde</div>
-                        <div>Hasta</div>
-                        <div>Incremento</div>
-                        <div>Acción</div>
+                      {/* Mismos tres ritmos que la escalera general, pero
+                          generados desde el precio de salida DE ESTE caballo.
+                          Un favorito no sube igual que el resto: ese es el caso
+                          que esta casilla existe para cubrir. */}
+                      <div className="space-y-2">
+                        {(["suave", "normal", "agresiva"] as RitmoEscalera[]).map((op) => {
+                          const activo = (horseRitmo[h.tempId] ?? ritmo) === op && !horseEscaleraTocada[h.tempId]
+                          return (
+                            <label
+                              key={op}
+                              className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs cursor-pointer ${
+                                activo ? "bg-zinc-950/70 border-zinc-600" : "bg-zinc-950/40 border-zinc-800"
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`ritmo-${h.tempId}`}
+                                className="mt-0.5"
+                                checked={activo}
+                                onChange={() => {
+                                  setHorseRitmo((prev) => ({ ...prev, [h.tempId]: op }))
+                                  setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: false }))
+                                  setHorseRulesByTempId((prev) => ({
+                                    ...prev,
+                                    [h.tempId]: generarEscalera(
+                                      n(h.precio_salida) || n(salidaPorDefecto) || 100,
+                                      op
+                                    ),
+                                  }))
+                                }}
+                              />
+                              <span className="text-zinc-200">{ETIQUETA_RITMO[op]}</span>
+                            </label>
+                          )
+                        })}
                       </div>
-                      {(horseRulesByTempId[h.tempId] || []).map((r) => (
-                        <div key={r.tempId} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
-                          <input
-                            inputMode="decimal"
-                            value={r.min_precio}
-                            onChange={(e) => updateHorseRule(h.tempId, r.tempId, { min_precio: e.target.value })}
-                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
-                            placeholder="Min"
-                          />
-                          <input
-                            inputMode="decimal"
-                            value={r.max_precio}
-                            onChange={(e) => updateHorseRule(h.tempId, r.tempId, { max_precio: e.target.value })}
-                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
-                            placeholder="Max (opcional)"
-                          />
-                          <input
-                            inputMode="decimal"
-                            value={r.incremento}
-                            onChange={(e) => updateHorseRule(h.tempId, r.tempId, { incremento: e.target.value })}
-                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
-                            placeholder="Incremento"
-                          />
+
+                      {horseEscaleraTocada[h.tempId] ? (
+                        <div className="flex items-center justify-between gap-2 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2">
+                          <span className="text-[11px] text-amber-100">Escalera personalizada</span>
                           <button
-                            onClick={() => removeHorseRule(h.tempId, r.tempId)}
-                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                            type="button"
+                            onClick={() => {
+                              const r = horseRitmo[h.tempId] ?? ritmo
+                              setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: false }))
+                              setHorseRulesByTempId((prev) => ({
+                                ...prev,
+                                [h.tempId]: generarEscalera(n(h.precio_salida) || n(salidaPorDefecto) || 100, r),
+                              }))
+                            }}
+                            className="text-[11px] text-amber-100 underline underline-offset-4"
                           >
-                            Quitar
+                            Volver a la automática
                           </button>
                         </div>
-                      ))}
+                      ) : null}
+
+                      <div className="rounded-xl bg-zinc-950/40 border border-zinc-800 p-3">
+                        <div className="text-[11px] text-zinc-500">Así subiría este caballo</div>
+                        {n(h.precio_salida) > 0 ? (
+                          <div className="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                            {simularPujas(
+                              n(h.precio_salida),
+                              horseRulesByTempId[h.tempId] || [],
+                              n(incrementoMinimo),
+                              7
+                            ).map((v, i) => (
+                              <span key={i} className="flex items-center gap-1">
+                                {i > 0 ? <span className="text-zinc-600">→</span> : null}
+                                <span className={i === 0 ? "font-semibold text-zinc-100" : "text-zinc-300"}>
+                                  {formatoBs(v)}
+                                </span>
+                              </span>
+                            ))}
+                            <span className="text-zinc-600">→ …</span>
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-xs text-zinc-500">
+                            Ponle precio de salida a este caballo para ver la simulación.
+                          </div>
+                        )}
+                      </div>
+
                       <button
-                        onClick={() => addHorseRule(h.tempId)}
-                        className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                        type="button"
+                        onClick={() =>
+                          setHorseTablaAbierta((prev) => ({ ...prev, [h.tempId]: !prev[h.tempId] }))
+                        }
+                        className="text-[11px] text-zinc-300 underline underline-offset-4"
                       >
-                        + Agregar rango
+                        {horseTablaAbierta[h.tempId] ? "Ocultar los tramos" : "Ver y editar los tramos"}
                       </button>
+
+                      {horseTablaAbierta[h.tempId] ? (
+                        <div className="space-y-2">
+                          {(horseRulesByTempId[h.tempId] || []).map((r, i) => (
+                            <div key={r.tempId} className="rounded-xl bg-zinc-950/40 border border-zinc-800 p-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] text-zinc-500">Tramo {i + 1}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: true }))
+                                    removeHorseRule(h.tempId, r.tempId)
+                                  }}
+                                  className="text-[11px] text-zinc-400 underline underline-offset-4"
+                                >
+                                  Quitar
+                                </button>
+                              </div>
+                              <div className="mt-2 grid grid-cols-3 gap-2">
+                                <label className="block">
+                                  <span className="block text-[10px] text-zinc-500">Desde</span>
+                                  <input
+                                    inputMode="decimal"
+                                    value={r.min_precio}
+                                    onChange={(e) => {
+                                      setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: true }))
+                                      updateHorseRule(h.tempId, r.tempId, { min_precio: e.target.value })
+                                    }}
+                                    className="mt-1 w-full rounded-lg bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-xs"
+                                  />
+                                </label>
+                                <label className="block">
+                                  <span className="block text-[10px] text-zinc-500">Hasta</span>
+                                  <input
+                                    inputMode="decimal"
+                                    value={r.max_precio}
+                                    onChange={(e) => {
+                                      setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: true }))
+                                      updateHorseRule(h.tempId, r.tempId, { max_precio: e.target.value })
+                                    }}
+                                    placeholder="sin tope"
+                                    className="mt-1 w-full rounded-lg bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-xs"
+                                  />
+                                </label>
+                                <label className="block">
+                                  <span className="block text-[10px] text-zinc-500">Sube de</span>
+                                  <input
+                                    inputMode="decimal"
+                                    value={r.incremento}
+                                    onChange={(e) => {
+                                      setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: true }))
+                                      updateHorseRule(h.tempId, r.tempId, { incremento: e.target.value })
+                                    }}
+                                    className="mt-1 w-full rounded-lg bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-xs"
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setHorseEscaleraTocada((prev) => ({ ...prev, [h.tempId]: true }))
+                              addHorseRule(h.tempId)
+                            }}
+                            className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-xs"
+                          >
+                            + Agregar tramo
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
-                    <div className="mt-2 text-xs text-zinc-500">Usara las reglas default.</div>
+                    <div className="mt-2 text-xs text-zinc-500">
+                      Sigue la escalera general del remate.
+                    </div>
                   )}
                 </div>
               </div>
@@ -1446,7 +1619,8 @@ export default function AdminCrearRematePage() {
           </div>
 
           <div className="mt-3 text-xs text-zinc-500">
-            Regla rapida: usa reglas default o activa reglas propias por caballo si necesitas mas control.
+            Todos los caballos siguen la escalera general. Actívale las reglas propias solo al que tenga
+            que subir distinto — el favorito, normalmente.
           </div>
         </section>
 
