@@ -552,7 +552,7 @@ Hay que verificar qué tablas tienen realtime activo y cuáles lo necesitan de v
 
 ---
 
-### 2.26 · Documento del modelo de saldo, en dos versiones — **pendiente, pedido por Jota el 25/09**
+### 2.26 · Documento del modelo de saldo, en dos versiones — ✅ **HECHO 27/09/2026**
 
 Pedido después de un ejercicio en voz alta que reveló que su modelo mental seguía en la v1: describió el baile de bloquear/desbloquear/devolver que quitamos en el bloque 2.
 
@@ -565,13 +565,95 @@ Hacen falta **dos documentos**:
 
 **El contenido mínimo, que ya está probado en el arnés y no hay que inventarlo:** durante el remate no se mueve un solo peso; el compromiso es una resta, no una transferencia; el dinero se mueve una sola vez, al cerrar; retirable = disponible − comprometido; y qué pasa cuando subes tu propia puja (se reemplaza, no se suma).
 
+**Entregado:**
+
+| archivo | para quién |
+|---|---|
+| `docs/MODELO_DE_SALDO.md` | Jota. Cada sección en dos idiomas: **En cristiano** y **Por dentro** |
+| `docs/licencia/COMO_FUNCIONA_EL_DINERO.md` | El licenciatario. Sin una línea de código |
+
+Los dos cierran con lo mismo: **la app no custodia dinero, es un registro contable.** Y los dos dicen que los requisitos legales de operar así cambian por país y son conversación con un abogado de la jurisdicción, no con el desarrollador.
+
+El de Jota termina señalando dónde se comprueba cada afirmación: `tests/pruebas_dinero.sql`. Esa es la forma de que el documento no se vuelva mentira — cuando cambie el comportamiento, la prueba se pone roja antes.
+
+**`ADR.md` entregado el 27/09.** Doce decisiones, cada una con contexto, por qué, consecuencias y **qué la revertiría**. Ese último campo no es estándar y es el que más vale: una decisión sin condición de salida se vuelve dogma.
+
+---
+
+### 2.27 · El logo es muy de IA — **anotado 27/09, para cuando toque marca**
+
+Jota entregó el logo actual (caballo dorado sobre negro, "REMATE CATIRE BELLO") y él mismo señaló el problema: **se nota generado con IA** — el degradado metálico, el brillo, la simetría demasiado limpia.
+
+Sirve para uso interno y para documentos que no salen de la casa. **No sirve para material que vea un cliente potencial**, porque comunica exactamente lo contrario de lo que quieres vender: un producto hecho con cuidado.
+
+Va junto al trabajo de marca de la Fase 2 (branding por instalación), no antes. Cuando toque: un logotipo plano, sin degradados ni brillos, que funcione en una sola tinta y a 16 píxeles de favicon. El PDF de la licencia ya tiene sitio para él en la portada.
+
 ---
 
 ## Bloque 3 — Blindaje de escritura
 
 > Depende de: bloques 0-2. **Es el bloque que convierte la app en algo que puede operar alguien que no seas tú.**
 
-### 3.1 · Corregir las FK en CASCADE — **CONFIRMADO 28/08. MÁXIMA PRIORIDAD DE TODA LA FASE 1**
+### 3.1 · Corregir las FK en CASCADE — ✅ **HECHO 27/09/2026, en dos mitades**
+
+> **Corrección de la cuenta.** Este backlog decía "las 8 claves foráneas en CASCADE". **Eran 14.** La cuenta salió al verificar antes de tocar nada, el 27/09, porque Jota pidió comprobar en qué punto estábamos en vez de arrancar de memoria. Tenía razón: la tarea ya estaba a medias y nadie lo había anotado.
+
+**Primera mitad — `20260923100000_fk_restrict_dinero.sql`** (23/09, ya en producción). Cinco claves del lado de la carrera: `bids→horses`, `bids→remates`, `horses→races`, `remates→races`, `race_results→horses`.
+
+Esas cinco cerraron el camino por el que se llegaba a casi todas las demás: si no puedes borrar un caballo con pujas, tampoco puedes borrar la carrera.
+
+**Segunda mitad — `20260927100000_fk_borrado_usuario.sql`** (27/09). Quedaba una cadena abierta, y era la peor:
+
+```
+auth.users → profiles → wallets → wallet_movements
+                ↓
+              bids, deposit_requests, withdraw_requests
+```
+
+Todo en CASCADE. **Borrar un usuario desde el panel de Auth de Supabase se llevaba su saldo, su historial de movimientos, sus recargas, sus retiros y sus pujas** — y borrar las pujas cambia en silencio quién va ganando cada caballo de un remate abierto, o sea el pozo y el compromiso de los demás.
+
+**La solución no necesita ni un trigger.** No se bloquea el borrado siempre: se bloquea solo cuando hay rastro de dinero, y eso sale gratis del orden en que Postgres resuelve las cascadas. Se dejan en CASCADE los eslabones que no son un dato por sí mismos (`profiles`, `wallets` — un wallet en cero no es información) y se ponen en RESTRICT los que sí lo son. Postgres baja por la cascada y choca con el primer RESTRICT: error, y toda la transacción se deshace.
+
+| | |
+|---|---|
+| Usuario con **cualquier** rastro de dinero o pujas | **no se puede borrar** |
+| Usuario que se registró y nunca hizo nada | **se borra limpio** |
+
+Esa segunda mitad importa más de lo que parece: **`handle_new_user` le crea un wallet a todo el mundo al registrarse**, así que un RESTRICT a secas sobre `wallets` habría impedido borrar hasta una cuenta de prueba recién creada.
+
+**Cómo se llegó aquí.** Se ofrecieron tres opciones (RESTRICT total / CASCADE con log / trigger condicional). Jota descartó la del log preguntando algo mejor: *"¿cuál da más trabajo?"* — y al responderla quedó claro que **un log no arregla esto**: no es que no sepas que pasó, es que el dato se fue. El cuadre de `casa_resumen()` se calcula desde las tablas que se acaban de borrar, y las pujas de un remate abierto no son un asiento que se ajuste. Jota también descartó el trigger condicional por el mantenimiento, con buen criterio — y resultó que el mantenimiento era evitable: el mismo comportamiento sale solo del orden de las cascadas.
+
+**Pruebas P34 y P35.** P34 consulta el catálogo (`confdeltype`) para las 13 claves relevantes, incluidas las tres que siguen en CASCADE a propósito. P35 es la que importa: intenta el borrado de verdad y comprueba las dos mitades.
+
+**Pendiente derivado (3.5):** el error que ve el admin en el panel de Supabase es un mensaje crudo de Postgres. Un `desactivar_usuario()` con su botón y su mensaje decente va con los roles.
+
+---
+
+### 3.1-bis · Cuenta completa de las 14 FK, para no volver a perderla
+
+| Clave foránea | Quedó en | Migración |
+|---|---|---|
+| `bids → horses` | RESTRICT | 20260923100000 |
+| `bids → remates` | RESTRICT | 20260923100000 |
+| `horses → races` | RESTRICT | 20260923100000 |
+| `remates → races` | RESTRICT | 20260923100000 |
+| `race_results → horses` | RESTRICT | 20260923100000 |
+| `wallet_movements → wallets` | RESTRICT | 20260927100000 |
+| `bids → profiles` | RESTRICT | 20260927100000 |
+| `deposit_requests → profiles` | RESTRICT | 20260927100000 |
+| `withdraw_requests → profiles` | RESTRICT | 20260927100000 |
+| `race_results → races` | RESTRICT | 20260927100000 |
+| `profiles → auth.users` | **CASCADE a propósito** | — |
+| `wallets → profiles` | **CASCADE a propósito** | — |
+| `remate_price_rules → horses` | **CASCADE a propósito** | — |
+| `remate_price_rules → remates` | **CASCADE a propósito** | — |
+
+Las cuatro en CASCADE no se olvidaron. `profiles` y `wallets` son los eslabones que permiten borrar una cuenta que nunca se usó; `remate_price_rules` es configuración del remate, no historia, y no carga dinero.
+
+---
+
+#### Texto original de la tarea, para referencia
+
 
 **Verificado en producción.** Las ocho claves foráneas del núcleo están en `ON DELETE CASCADE`:
 

@@ -1642,6 +1642,144 @@ exception when others then
 end $$;
 
 
+-- ============================================================================
+--  P34 - Las claves foraneas del dinero estan en RESTRICT
+--
+--  Consulta el catalogo, no ejercita el borrado (eso lo hace P35). Vale la
+--  pena tenerla aparte porque una clave foranea se puede perder sin que nada
+--  se ponga rojo: basta con que alguien recree la tabla o vuelva a correr un
+--  `add constraint` viejo.
+--
+--  confdeltype: 'r' = RESTRICT, 'c' = CASCADE, 'a' = NO ACTION
+-- ============================================================================
+do $$
+declare
+  r record;
+  v_todas_ok boolean := true;
+  v_detalle text := '';
+begin
+  for r in
+    select * from (values
+      -- (nombre, esperado)  't' = restrict a proposito, 'c' = cascade a proposito
+      ('wallet_movements_wallet_id_fkey',      'r'),
+      ('bids_user_id_fkey',                    'r'),
+      ('deposit_requests_user_id_fkey',        'r'),
+      ('withdraw_requests_user_id_fkey',       'r'),
+      ('race_results_race_id_fkey',            'r'),
+      -- las de la primera mitad (20260923100000), que no se deben perder
+      ('bids_horse_id_fkey',                   'r'),
+      ('bids_remate_id_fkey',                  'r'),
+      ('horses_race_id_fkey',                  'r'),
+      ('remates_race_id_fkey',                 'r'),
+      ('race_results_ganador_horse_id_fkey',   'r'),
+      -- las que se quedan en CASCADE A PROPOSITO
+      ('wallets_user_id_fkey',                 'c'),
+      ('remate_price_rules_horse_id_fkey',     'c'),
+      ('remate_price_rules_remate_id_fkey',    'c')
+    ) as t(nombre, esperado)
+  loop
+    declare v_real char;
+    begin
+      select confdeltype into v_real from pg_constraint where conname = r.nombre;
+      if v_real is null then
+        v_todas_ok := false;
+        v_detalle := v_detalle || r.nombre || '=NO EXISTE ';
+      elsif v_real <> r.esperado then
+        v_todas_ok := false;
+        v_detalle := v_detalle || r.nombre || '=' || v_real || '(esperado ' || r.esperado || ') ';
+      end if;
+    end;
+  end loop;
+
+  perform _p.anotar(34, 'Las claves foraneas del dinero estan en RESTRICT',
+    '5 nuevas + 5 de la primera mitad en restrict; 3 en cascade a proposito',
+    v_todas_ok,
+    case when v_todas_ok then 'las 13 como deben' else 'mal: ' || v_detalle end);
+exception when others then
+  perform _p.anotar(34, 'Las claves foraneas del dinero estan en RESTRICT',
+    'ver arriba', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P35 - Borrar un usuario: bloqueado si tiene dinero, permitido si no
+--
+--  LA PRUEBA QUE DE VERDAD IMPORTA DE 3.1. No mira el catalogo: intenta el
+--  borrado y comprueba que Postgres lo frena, bajando por la cascada
+--  auth.users -> profiles -> wallets -> wallet_movements.
+--
+--  Las dos mitades importan igual:
+--    - si no bloquea al que tiene dinero, la tarea no sirve de nada
+--    - si bloquea TAMBIEN al que no tiene nada, ninguna cuenta de prueba se
+--      podria borrar jamas, porque handle_new_user le crea un wallet a todo
+--      el mundo al registrarse
+-- ============================================================================
+do $$
+declare
+  v_con_dinero uuid; v_limpio uuid; v_rem uuid; v_h1 uuid;
+  v_bloqueado boolean := false;
+  v_limpio_borrado boolean := false;
+  v_msg text := '';
+begin
+  perform _p.limpiar();
+
+  -- usuario CON rastro: _p.usuario ya le deja una recarga aprobada, y ademas
+  -- le hacemos pujar para que tenga una puja en un remate abierto
+  v_con_dinero := _p.usuario('con_dinero', 5000);
+  v_rem := _p.escenario(2, 100);
+  v_h1  := _p.caballo(v_rem, 1);
+  perform _p.actuar_como(v_con_dinero);
+  perform public.hacer_puja(v_rem, v_h1, 100, true);
+
+  -- usuario LIMPIO: se registra y no hace nada mas.
+  --
+  -- Basta con la fila en auth.users: el trigger `on_auth_user_created` llama a
+  -- handle_new_user(), que crea el perfil Y el wallet. Esto NO es un atajo del
+  -- arnes, es literalmente lo que pasa cuando alguien se registra en la app.
+  --
+  -- (La primera version de esta prueba insertaba perfil y wallet a mano y
+  -- reventaba con `duplicate key ... profiles_pkey`, porque el trigger ya los
+  -- habia creado. Por eso _p.usuario lleva `on conflict do update`.)
+  v_limpio := gen_random_uuid();
+  insert into auth.users (id) values (v_limpio);
+  update public.profiles set username = 'recien_llegado' where id = v_limpio;
+
+  -- Si el trigger no hizo su trabajo, esta prueba no esta probando lo que cree.
+  if not exists (select 1 from public.profiles where id = v_limpio)
+     or not exists (select 1 from public.wallets where user_id = v_limpio) then
+    perform _p.anotar(35, 'Borrar usuario: bloqueado con dinero, permitido sin nada',
+      'ver arriba', false,
+      'el trigger on_auth_user_created no creo perfil o wallet: el escenario es invalido');
+    return;
+  end if;
+
+  -- mitad 1: el que tiene dinero NO se puede borrar
+  begin
+    delete from auth.users where id = v_con_dinero;
+    v_msg := 'con_dinero SE BORRO (mal) | ';
+  exception when others then
+    v_bloqueado := true;
+    v_msg := 'con_dinero bloqueado (' || sqlstate || ') | ';
+  end;
+
+  -- mitad 2: el limpio SI se puede borrar
+  begin
+    delete from auth.users where id = v_limpio;
+    v_limpio_borrado := not exists (select 1 from public.profiles where id = v_limpio);
+    v_msg := v_msg || 'limpio borrado=' || v_limpio_borrado::text;
+  exception when others then
+    v_msg := v_msg || 'limpio NO se pudo borrar (' || sqlerrm || ')';
+  end;
+
+  perform _p.anotar(35, 'Borrar usuario: bloqueado con dinero, permitido sin nada',
+    'con rastro de dinero o pujas: error; sin nada: se borra',
+    v_bloqueado and v_limpio_borrado, v_msg);
+exception when others then
+  perform _p.anotar(35, 'Borrar usuario: bloqueado con dinero, permitido sin nada',
+    'ver arriba', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;

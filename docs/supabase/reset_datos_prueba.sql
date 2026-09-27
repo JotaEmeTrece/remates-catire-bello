@@ -59,6 +59,10 @@ delete from public.deposit_requests;
 delete from public.withdraw_requests;
 
 -- 7) Wallets a cero. No se borran: siguen atadas a los usuarios que quedan.
+--    Desde la 20260927100000 esto ademas es obligatorio y no una preferencia:
+--    wallet_movements->wallets quedo en RESTRICT, asi que una wallet con
+--    movimientos no se puede borrar. Aqui no molesta porque los movimientos
+--    se borraron en el paso 6, pero conviene saber por que el orden importa.
 update public.wallets
    set saldo_disponible = 0,
        saldo_bloqueado  = 0;
