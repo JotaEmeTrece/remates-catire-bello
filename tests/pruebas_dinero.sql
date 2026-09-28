@@ -11,6 +11,36 @@
 --
 --  IMPORTANTE: varias FALLAN a proposito contra el codigo actual. Esas fallas
 --  son el defecto reproducido. Cuando se aplique la correccion, pasan a OK.
+--
+--  ---------------------------------------------------------------------------
+--  REGLA, APRENDIDA A GOLPES EL 28/09
+--
+--  Cuando el exito de una prueba consiste en "salto una excepcion", hay que
+--  comprobar CUAL excepcion.
+--
+--  P39 pasaba en verde SIN la migracion aplicada. Llamaba a una funcion que
+--  todavia no existia, saltaba `function does not exist`, y su
+--  `exception when others` lo contaba como el rechazo que buscaba. Las dos
+--  mitades de la prueba aprobaban por la misma razon: no habia nada que
+--  probar. Es lo contrario de lo que dice el ADR-009, y estaba dentro del
+--  propio arnes.
+--
+--  Un `when others` se traga tanto el rechazo que buscas como el error que
+--  significa que no estas probando nada. Los dos que importan:
+--
+--    P0001 = raise_exception     -> NUESTRO codigo rechazo, a proposito
+--    42883 = undefined_function  -> la migracion no esta aplicada
+--    23503 = foreign_key_violation -> lo freno una clave foranea
+--    42501 = insufficient_privilege -> lo freno un permiso
+--
+--  Y no basta con que rechace: hay que comprobar ADEMAS que no escribio nada.
+--  Ver P39 como patron.
+--
+--  PENDIENTE: hay 66 bloques con `exception when others` en este archivo. Los
+--  demas prueban funciones que llevan tiempo existiendo, asi que el riesgo es
+--  menor, pero la trampa es la misma el dia que una migracion renombre algo.
+--  Retrofit anotado en el backlog; las pruebas NUEVAS siguen la regla ya.
+--  ---------------------------------------------------------------------------
 -- ============================================================================
 
 \set ON_ERROR_STOP off
@@ -1776,6 +1806,240 @@ begin
     v_bloqueado and v_limpio_borrado, v_msg);
 exception when others then
   perform _p.anotar(35, 'Borrar usuario: bloqueado con dinero, permitido sin nada',
+    'ver arriba', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P36 - Nadie escribe `remates` directo
+--
+--  LA PRUEBA MAS IMPORTANTE DE 3.2. No comprueba la RPC nueva: comprueba que
+--  la puerta vieja esta cerrada. De nada sirve editar_remate() si el frontend
+--  puede seguir haciendo update sobre la tabla.
+--
+--  Como el arnes corre como `postgres` (superusuario, se salta cualquier ACL),
+--  esto se consulta con has_table_privilege, igual que P33 con las funciones.
+-- ============================================================================
+do $$
+declare
+  v_auth_upd boolean; v_auth_ins boolean; v_auth_del boolean;
+  v_anon_upd boolean; v_auth_sel boolean;
+begin
+  v_auth_upd := has_table_privilege('authenticated', 'public.remates', 'update');
+  v_auth_ins := has_table_privilege('authenticated', 'public.remates', 'insert');
+  v_auth_del := has_table_privilege('authenticated', 'public.remates', 'delete');
+  v_anon_upd := has_table_privilege('anon',          'public.remates', 'update');
+  -- leer si tiene que poder: la pantalla del remate la ve todo el mundo
+  v_auth_sel := has_table_privilege('authenticated', 'public.remates', 'select');
+
+  -- OJO CON `insert`: se queda abierto A PROPOSITO hasta el bloque 4, porque
+  -- la pantalla de crear remate lo usa. No se comprueba aqui para que esta
+  -- prueba no se ponga roja por algo que decidimos dejar asi. Cuando exista
+  -- `crear_remate_completo`, se cierra y se anade a esta linea.
+  perform _p.anotar(36, 'Nadie escribe la tabla remates directo',
+    'authenticated y anon sin update ni delete; select si; insert abierto hasta el bloque 4',
+    (not v_auth_upd) and (not v_auth_del) and (not v_anon_upd) and v_auth_sel,
+    'auth[upd=' || v_auth_upd::text || ',del=' || v_auth_del::text ||
+    ',sel=' || v_auth_sel::text || ',ins=' || v_auth_ins::text || ' (abierto a proposito)' ||
+    '] anon[upd=' || v_anon_upd::text || ']');
+exception when others then
+  perform _p.anotar(36, 'Nadie escribe la tabla remates directo',
+    'ver arriba', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P37 - El porcentaje de la casa se congela en cuanto hay una puja
+--
+--  La gente pujo sabiendo que el premio era el 75% del pozo. Cambiarlo
+--  despues es cambiar el trato una vez que ya apostaron.
+--
+--  Las dos mitades: antes de la primera puja SI se puede (y deja aviso),
+--  despues NO.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u1 uuid; v_rem uuid; v_h1 uuid;
+  v_antes_ok boolean := false; v_despues_bloqueado boolean := false;
+  v_avisos integer := 0; v_msg text := '';
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan', 10000);
+  v_rem   := _p.escenario(2, 100, 25);
+  v_h1    := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_admin);
+
+  -- mitad 1: sin pujas todavia, el cambio pasa
+  begin
+    perform public.editar_remate(v_rem, 30, null, null, null, null);
+    v_antes_ok := (select porcentaje_casa from public.remates where id = v_rem) = 30;
+    v_msg := 'sin pujas: cambio a ' ||
+      (select porcentaje_casa::text from public.remates where id = v_rem) || ' | ';
+  exception when others then
+    v_msg := 'sin pujas NO dejo cambiar (' || sqlerrm || ') | ';
+  end;
+
+  -- llega una puja
+  perform _p.actuar_como(v_u1);
+  perform public.hacer_puja(v_rem, v_h1, 100, true);
+  perform _p.actuar_como(v_admin);
+
+  -- mitad 2: ahora tiene que rechazar
+  begin
+    perform public.editar_remate(v_rem, 40, null, null, null, null);
+    v_msg := v_msg || 'con pujas DEJO cambiar (mal)';
+  exception when others then
+    v_despues_bloqueado := true;
+    v_msg := v_msg || 'con pujas bloqueado';
+  end;
+
+  -- y el cambio valido tiene que haber dejado su aviso
+  select count(*) into v_avisos
+  from public.remate_avisos
+  where remate_id = v_rem and tipo = 'porcentaje_casa';
+
+  perform _p.anotar(37, 'El porcentaje de la casa se congela con la primera puja',
+    'sin pujas se puede y deja 1 aviso; con pujas se rechaza',
+    v_antes_ok and v_despues_bloqueado and v_avisos = 1,
+    v_msg || ' | avisos=' || v_avisos::text);
+exception when others then
+  perform _p.anotar(37, 'El porcentaje de la casa se congela con la primera puja',
+    'ver arriba', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P38 - Cambiar el incremento con el remate en marcha deja aviso
+--
+--  Decision de Jota del 27/09: esto SI se permite -- un remate estancado
+--  puede necesitar subir mas rapido -- pero no en silencio. El aviso lo
+--  escribe el sistema, no el admin, por la misma razon que el asiento
+--  `resultado_remate` del libro de la casa: un aviso que depende de que
+--  alguien se acuerde de escribirlo no es un aviso.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u1 uuid; v_rem uuid; v_h1 uuid;
+  v_aviso record; v_nuevo numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan', 10000);
+  v_rem   := _p.escenario(2, 100, 25);
+  v_h1    := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u1);
+  perform public.hacer_puja(v_rem, v_h1, 100, true);
+
+  perform _p.actuar_como(v_admin);
+  perform public.editar_remate(v_rem, null, 75, null, null, null);
+
+  select incremento_minimo into v_nuevo from public.remates where id = v_rem;
+  select * into v_aviso from public.remate_avisos
+   where remate_id = v_rem and tipo = 'incremento' limit 1;
+
+  perform _p.anotar(38, 'Cambiar el incremento con pujas deja aviso para los jugadores',
+    'incremento = 75 y un aviso de tipo incremento',
+    v_nuevo = 75 and v_aviso.id is not null,
+    'incremento=' || coalesce(v_nuevo::text,'null') ||
+    ' | aviso=' || coalesce(v_aviso.mensaje, 'NINGUNO'));
+exception when others then
+  perform _p.anotar(38, 'Cambiar el incremento con pujas deja aviso para los jugadores',
+    'ver arriba', false, 'excepcion: ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P39 - editar_remate no toca el estado ni edita remates cerrados
+--
+--  REESCRITA EL 28/09. La primera version PASABA EN VERDE sin la migracion
+--  aplicada, que es el peor resultado posible para una prueba:
+--
+--    - `sin_param_estado` buscaba una funcion con parametro `estado`. Sin la
+--      migracion no hay NINGUNA funcion, asi que el NOT EXISTS daba true.
+--    - `cerrado_bloqueado` llamaba a la funcion; saltaba "function does not
+--      exist", y un `exception when others` la contaba como rechazo correcto.
+--
+--  Las dos mitades aprobaban porque la funcion no existia.
+--
+--  LA REGLA QUE SALE DE AQUI, Y VALE PARA TODO EL ARNES:
+--  cuando el exito de una prueba consiste en "salto una excepcion", hay que
+--  comprobar CUAL excepcion. Un `when others` se traga tanto el rechazo que
+--  buscas como el error que significa que no estas probando nada.
+--
+--    42883 = undefined_function  -> la migracion NO esta aplicada
+--    P0001 = raise_exception     -> nuestro codigo rechazo a proposito
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u1 uuid; v_rem uuid; v_h1 uuid;
+  v_existe boolean;
+  v_sin_param_estado boolean;
+  v_cerrado_bloqueado boolean := false;
+  v_estado_sigue boolean := false;
+  v_msg text := '';
+  v_sqlstate text;
+begin
+  perform _p.limpiar();
+
+  -- 0) LO PRIMERO: la funcion tiene que existir. Sin esto, todo lo demas
+  --    aprueba por omision.
+  select exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'editar_remate'
+  ) into v_existe;
+
+  if not v_existe then
+    perform _p.anotar(39, 'editar_remate no toca el estado ni edita remates cerrados',
+      'sin parametro de estado; un remate cerrado se rechaza con P0001',
+      false, 'editar_remate NO EXISTE: la migracion no esta aplicada');
+    return;
+  end if;
+
+  -- 1) ninguna sobrecarga acepta un parametro de estado
+  select not exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'editar_remate'
+      and pg_get_function_arguments(p.oid) ilike '%estado%'
+  ) into v_sin_param_estado;
+
+  v_admin := _p.usuario('admin', 0, true);
+  v_u1    := _p.usuario('juan', 10000);
+  v_rem   := _p.escenario(2, 100, 25);
+  v_h1    := _p.caballo(v_rem, 1);
+
+  perform _p.actuar_como(v_u1);
+  perform public.hacer_puja(v_rem, v_h1, 100, true);
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+
+  -- 2) un remate cerrado no se edita, y tiene que rechazarlo NUESTRO codigo
+  begin
+    perform public.editar_remate(v_rem, null, 999, null, null, null);
+    v_msg := 'dejo editar un remate CERRADO (mal)';
+  exception when others then
+    v_sqlstate := sqlstate;
+    if v_sqlstate = 'P0001' then
+      v_cerrado_bloqueado := true;
+      v_msg := 'remate cerrado rechazado por nuestro codigo (P0001)';
+    else
+      v_msg := 'rechazado, pero por el motivo EQUIVOCADO (' || v_sqlstate || '): ' || sqlerrm;
+    end if;
+  end;
+
+  -- 3) y el incremento no se movio: que rechace no basta, tiene que no escribir
+  v_estado_sigue := (select incremento_minimo from public.remates where id = v_rem) <> 999;
+
+  perform _p.anotar(39, 'editar_remate no toca el estado ni edita remates cerrados',
+    'sin parametro de estado; un remate cerrado se rechaza con P0001 y no se escribe nada',
+    v_sin_param_estado and v_cerrado_bloqueado and v_estado_sigue,
+    'sin_param_estado=' || v_sin_param_estado::text ||
+    ' | ' || v_msg ||
+    ' | no escribio=' || v_estado_sigue::text);
+exception when others then
+  perform _p.anotar(39, 'editar_remate no toca el estado ni edita remates cerrados',
     'ver arriba', false, 'excepcion: ' || sqlerrm);
 end $$;
 

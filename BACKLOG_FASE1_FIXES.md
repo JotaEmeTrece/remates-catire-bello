@@ -704,7 +704,62 @@ alter table public.race_results add  constraint race_results_ganador_horse_id_fk
 
 ---
 
-### 3.2 · RPC `editar_remate` y cierre de la escritura directa
+### 3.2 · RPC `editar_remate` y cierre de la escritura directa — 🔵 **TAJADA A HECHA 28/09/2026**
+
+**Lo que se encontro al leer la pantalla, y era peor que lo que decia este backlog.** La pantalla escribe `remates.estado` con un UPDATE directo, y `liquidar_remate()` solo exige que el estado sea `cerrado`. Entonces esta secuencia funcionaba entera desde la aplicacion:
+
+1. Poner `estado = 'cerrado'` a mano. **No se le cobra a nadie:** `_cerrar_remate_interno()` no corre.
+2. Elegir ganador y liquidar. La RPC ve `cerrado`, calcula el pozo y **paga el premio**.
+
+Un premio pagado con dinero que nadie aporto. Es el mismo defecto que tenia el cron antes de la tarea 1.9 —cerrar con un UPDATE plano sin cobrar— salvo que al cron se lo arreglamos y a este boton no. **Mientras esa puerta estuvo abierta, todas las guardas del bloque 2 eran evitables.**
+
+**Inventario completo de lo que escribe la pantalla** (leido, no recordado):
+
+| Escritura | Estado |
+|---|---|
+| `remates.update` | ✅ cerrada, tajada A |
+| `horses.update` / `insert` | tajada B |
+| `horses.delete` | ✅ ya la bloquea la FK desde 3.1 |
+| `races.update` | tajada C |
+| `remate_price_rules` delete+insert | tajada C |
+| `cerrar/cancelar/archivar/set_ganador/liquidar` | ✅ ya iban por RPC |
+
+**La regla acordada con Jota el 27/09:**
+
+| Campo | Abierto sin pujas | Abierto con pujas | Cerrado |
+|---|---|---|---|
+| `estado` | solo por RPC | solo por RPC | solo por RPC |
+| `porcentaje_casa` | ✅ | ❌ | ❌ |
+| `incremento_minimo` | ✅ | ✅ **con aviso** | ❌ |
+| escalera | ✅ | ✅ **con aviso** | ❌ |
+| `precio_salida` | ✅ | ❌ | ❌ |
+| `tipo` | ✅ | ❌ | ❌ |
+| nombre, jinete, comentarios | ✅ | ✅ | ✅ |
+
+Dos decisiones de Jota que cambiaron la propuesta inicial: **el porcentaje de la casa se congela con la primera puja** ("la gente pujo sabiendo cual era el reparto"), y **la escalera SI se puede editar en marcha** porque puede hacer falta acelerar un remate estancado — pero los dos casos **dejan aviso visible para todos los jugadores**. De ahi salio `remate_avisos` y el ADR-014.
+
+**Tajada A entregada:** `20260928100000_editar_remate.sql` — tabla `remate_avisos`, funcion `editar_remate()` sin parametro de estado, y **`revoke update, delete on remates`**. El frontend pasa a llamar la RPC y el selector de estado se convirtio en texto de solo lectura: un control que finge funcionar es peor que no tenerlo.
+
+`insert` sobre `remates` **se deja abierto a proposito** hasta `crear_remate_completo` (bloque 4): la pantalla de crear lo usa. El riesgo es bajo y conviene decir por que, no solo que lo es — un remate recien insertado no tiene pujas, asi que todos los caballos serian de la casa y el premio no saldria de ningun sitio.
+
+**Pruebas P36 a P39.** P36 comprueba el ACL de la tabla (la puerta vieja), P37 las dos mitades del porcentaje, P38 que el cambio de incremento deja aviso, P39 que la RPC ni siquiera acepta un parametro de estado y que un remate cerrado no se edita.
+
+**Pendiente: tajadas B (caballos) y C (carrera y escalera).**
+
+---
+
+### 0.4 · Retrofit del arnés: comprobar QUÉ excepción — **anotado 28/09**
+
+P39 pasó en verde sin la migración aplicada: llamaba a una función inexistente, saltaba `undefined_function`, y su `exception when others` lo contó como el rechazo que buscaba. **Una prueba que aprueba exista o no exista lo que comprueba.** Corregida, y la regla quedó escrita en la cabecera del arnés y en el ADR-009.
+
+Quedan **66 bloques** con `exception when others`. Los demás ejercitan funciones que llevan tiempo existiendo, así que el riesgo es menor — pero la trampa es idéntica el día que una migración renombre algo.
+
+El retrofit es mecánico: exigir el SQLSTATE correcto (`P0001` para un rechazo nuestro, `23503` para una clave foránea, `42501` para un permiso) y comprobar además que no se escribió nada. No es urgente y **no debe mezclarse con una tajada de código**: va en su propia pasada, con el arnés en verde antes y después.
+
+---
+
+#### Texto original de la tarea, para referencia
+
 
 **Qué:**
 1. Una RPC transaccional que reciba los cambios de carrera, remate y caballos, y valide:

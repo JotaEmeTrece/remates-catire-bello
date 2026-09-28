@@ -130,6 +130,8 @@ Las decisiones no se borran. Si una se cambia, se marca como reemplazada y se es
 
 **Consecuencias.** El arnés es SQL puro (`tests/pruebas_dinero.sql`), sin dependencias, y corre completo en segundos. Distingue pruebas que detectan **divergencia** de las que detectan que algo está **mal**.
 
+**Corolario añadido el 28/09, después de violar este mismo ADR dentro del arnés.** Cuando el éxito de una prueba consiste en "saltó una excepción", hay que comprobar **cuál**. P39 pasaba en verde sin la migración aplicada: llamaba a una función inexistente, saltaba `undefined_function`, y su `exception when others` lo contaba como el rechazo que buscaba. Las dos mitades aprobaban porque no había nada que probar. La prueba debe **(a)** comprobar primero que existe lo que va a ejercitar, **(b)** exigir el SQLSTATE correcto —`P0001` para un rechazo nuestro, no `42883`— y **(c)** verificar además que no se escribió nada.
+
 **Qué la revertiría.** Nada.
 
 ---
@@ -191,3 +193,17 @@ Las decisiones no se borran. Si una se cambia, se marca como reemplazada y se es
 El costo es que el admin ve un error crudo de Postgres en el panel de Supabase. Un `desactivar_usuario()` con mensaje decente queda para el ADR de roles.
 
 **Qué la revertiría.** Que aparezca una obligación legal de borrado real de datos personales en alguna jurisdicción donde opere un licenciatario. Eso exigiría separar el dato personal del dato contable —anonimizar en vez de borrar— y sería una decisión nueva, con asesoría legal.
+
+---
+
+## ADR-014 · Los avisos al jugador los escribe el sistema, no el admin
+
+**Contexto.** Se decidio (27/09) que el admin pueda cambiar el incremento de un remate en marcha —un remate estancado puede necesitar subir mas rapido— y el porcentaje de la casa antes de la primera puja. Los dos cambian lo que el jugador esperaba cuando entro.
+
+**Decision.** Tabla `remate_avisos`, escrita **desde dentro de las RPC de edicion**. El admin no redacta el aviso ni puede omitirlo: si el cambio ocurre, el aviso existe. Lectura publica (`anon` incluido), escritura solo por RPC.
+
+**Por que.** Es el mismo razonamiento del asiento `resultado_remate` del ADR-007: **un aviso que depende de que alguien se acuerde de escribirlo no es un aviso, es una intencion.** Si el admin pudiera elegir si anunciar o no, el jugador no tendria forma de distinguir "no cambio nada" de "cambio y no me lo dijeron".
+
+**Consecuencias.** El texto del aviso lo compone la funcion a partir del valor anterior y el nuevo, asi que dice siempre la verdad y siempre en el mismo formato. `detalles` guarda los dos valores en jsonb para poder auditar sin parsear texto.
+
+**Qué la revertiría.** Nada previsto. Si aparecen mas campos editables en marcha, se suman al mismo mecanismo.

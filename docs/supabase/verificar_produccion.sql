@@ -7,9 +7,40 @@
 --
 --  Lee la columna `esperado`: si `estado` no coincide, esa migracion no esta
 --  en produccion o algo la revirtio.
+--
+--  ---------------------------------------------------------------------------
+--  CORREGIDO EL 27/09/2026, Y LA LECCION VALE MAS QUE EL ARREGLO
+--
+--  Los chequeos que miran el cuerpo de una funcion comparaban contra
+--  pg_get_functiondef() TAL CUAL, comentarios incluidos. Eso produjo dos
+--  clases de error, y la segunda es la grave:
+--
+--    - FALSA ALARMA: el chequeo de `apuesta_minima` salia en REVISAR porque
+--      la palabra aparece en dos comentarios de hacer_puja que explican que
+--      el piso ya no existe. Molesto, pero visible.
+--
+--    - FALSO OK: el chequeo de la precedencia por caballo busca la frase
+--      `horse_id is not null`... que esta literalmente en el comentario que
+--      explica ese mismo arreglo. Habria dicho OK con el codigo roto.
+--
+--  Una falsa alarma te hace perder un rato. Un falso OK te deja ciego, y
+--  ademas entrena a ignorar la fila que avisa.
+--
+--  Arreglo: el CTE `defs` quita los comentarios de linea antes de comparar.
+--  ---------------------------------------------------------------------------
 -- ===========================================================================
 
-with chequeos as (
+with defs as (
+  -- El cuerpo de cada funcion de `public`, SIN comentarios de linea.
+  -- La bandera 'n' de regexp_replace hace que `.` no cruce el salto de linea,
+  -- asi que `--.*` borra desde el guion doble hasta el final de esa linea.
+  select p.proname,
+         regexp_replace(pg_get_functiondef(p.oid), '--.*', '', 'gn') as src
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+),
+chequeos as (
 
   -- ---------------- bloque 0 y 1 ----------------
   select 1 as n, 'enum apuesta_desbloqueo existe' as chequeo, 'true' as esperado,
@@ -25,14 +56,12 @@ with chequeos as (
               where attrelid = 'public.admin_actions'::regclass and attname = 'admin_id'), 'no existe')
 
   union all select 4, 'regla por caballo gana sobre la general (1.10)', 'true',
-    coalesce((select (pg_get_functiondef(p.oid) like '%horse_id is not null%')::text
-              from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = '_incremento_aplicable'), 'no existe')
+    coalesce((select (src like '%horse_id is not null%')::text
+              from defs where proname = '_incremento_aplicable'), 'no existe')
 
   union all select 5, 'hacer_puja sin el piso apuesta_minima (2.17)', 'true',
-    coalesce((select (pg_get_functiondef(p.oid) not like '%apuesta_minima%')::text
-              from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = 'hacer_puja'), 'no existe')
+    coalesce((select (src not like '%apuesta_minima%')::text
+              from defs where proname = 'hacer_puja'), 'no existe')
 
   -- ---------------- bloque 2: saldo v2 ----------------
   union all select 6, 'funcion compromiso_usuario existe', 'true',
@@ -40,9 +69,8 @@ with chequeos as (
              where n.nspname = 'public' and p.proname = 'compromiso_usuario'))::text
 
   union all select 7, 'hacer_puja NO escribe en wallets (tajada B)', 'true',
-    coalesce((select (pg_get_functiondef(p.oid) not like '%update public.wallets%')::text
-              from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = 'hacer_puja'), 'no existe')
+    coalesce((select (src not like '%update public.wallets%')::text
+              from defs where proname = 'hacer_puja'), 'no existe')
 
   union all select 8, 'enum apuesta_cobro existe (tajada C)', 'true',
     (exists (select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
@@ -66,20 +94,17 @@ with chequeos as (
     coalesce((select relrowsecurity::text from pg_class where oid = to_regclass('public.house_ledger')), 'no existe')
 
   union all select 13, 'liquidar_remate escribe el asiento automatico', 'true',
-    coalesce((select (pg_get_functiondef(p.oid) like '%resultado_remate%')::text
-              from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = 'liquidar_remate'), 'no existe')
+    coalesce((select (src like '%resultado_remate%')::text
+              from defs where proname = 'liquidar_remate'), 'no existe')
 
   union all select 14, 'registrar_movimiento_casa RECHAZA resultado_remate', 'true',
-    coalesce((select (pg_get_functiondef(p.oid) like '%not in (''aporte_capital'',''retiro_utilidad'',''ajuste'')%')::text
-              from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = 'registrar_movimiento_casa'), 'no existe')
+    coalesce((select (src like '%not in (''aporte_capital'',''retiro_utilidad'',''ajuste'')%')::text
+              from defs where proname = 'registrar_movimiento_casa'), 'no existe')
 
   -- ---------------- 2.22 y permisos ----------------
   union all select 15, 'casa_resumen exige admin', 'true',
-    coalesce((select (pg_get_functiondef(p.oid) like '%No autorizado%')::text
-              from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = 'casa_resumen'), 'no existe')
+    coalesce((select (src like '%No autorizado%')::text
+              from defs where proname = 'casa_resumen'), 'no existe')
 
   union all select 16, 'auto_cerrar_remates CERRADA a anon', 'false',
     has_function_privilege('anon', 'public.auto_cerrar_remates()', 'execute')::text
@@ -131,29 +156,29 @@ with chequeos as (
     coalesce((select (confdeltype = 'r')::text from pg_constraint
               where conname = 'deposit_requests_user_id_fkey'), 'no existe')
 
-  union all select 27+3, 'FK withdraw_requests->profiles en RESTRICT', 'true',
+  union all select 30, 'FK withdraw_requests->profiles en RESTRICT', 'true',
     coalesce((select (confdeltype = 'r')::text from pg_constraint
               where conname = 'withdraw_requests_user_id_fkey'), 'no existe')
 
-  union all select 27+4, 'FK race_results->races en RESTRICT', 'true',
+  union all select 31, 'FK race_results->races en RESTRICT', 'true',
     coalesce((select (confdeltype = 'r')::text from pg_constraint
               where conname = 'race_results_race_id_fkey'), 'no existe')
 
-  union all select 27+5, 'FK wallets->profiles SIGUE en CASCADE (a proposito)', 'true',
+  union all select 32, 'FK wallets->profiles SIGUE en CASCADE (a proposito)', 'true',
     coalesce((select (confdeltype = 'c')::text from pg_constraint
               where conname = 'wallets_user_id_fkey'), 'no existe')
 
   -- ---------------- estado de los datos ----------------
-  union all select 30, 'DATO: usuarios registrados', '(informativo)',
+  union all select 90, 'DATO: usuarios registrados', '(informativo)',
     (select count(*)::text from public.profiles)
 
-  union all select 31, 'DATO: saldo total de usuarios', '(informativo)',
+  union all select 91, 'DATO: saldo total de usuarios', '(informativo)',
     (select coalesce(sum(saldo_disponible + saldo_bloqueado), 0)::text from public.wallets)
 
-  union all select 32, 'DATO: remates abiertos', '(informativo)',
+  union all select 92, 'DATO: remates abiertos', '(informativo)',
     (select count(*)::text from public.remates where estado = 'abierto')
 
-  union all select 33, 'DATO: asientos en el libro de la casa', '(informativo)',
+  union all select 93, 'DATO: asientos en el libro de la casa', '(informativo)',
     (select count(*)::text from public.house_ledger)
 )
 select

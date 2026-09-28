@@ -656,15 +656,25 @@ export default function AdminRemateDetailPage() {
       const opensTime24 = parseTime12hTo24(remateDraft.opens_time)
       const closesTime24 = parseTime12hTo24(remateDraft.closes_time)
 
-      const remateUpdate: any = {
-        estado: remateDraft.estado.trim() || remate.estado,
-        incremento_minimo: n(remateDraft.incremento_minimo),
-        porcentaje_casa: n(remateDraft.porcentaje_casa),
-        tipo: remateDraft.tipo || remate.tipo || "vivo",
-        opens_at: buildCaracasTs(opensDateISO, opensTime24),
-        closes_at: buildCaracasTs(closesDateISO, closesTime24),
-      }
-      const { error: remErr } = await supabase.from("remates").update(remateUpdate).eq("id", remate.id)
+      // ANTES: un UPDATE directo sobre `remates`, con `estado` incluido.
+      //
+      // Ese campo era el agujero entero de la tarea 3.2: poner estado a
+      // 'cerrado' a mano NO le cobra a nadie, y liquidar_remate() solo exige
+      // que el estado sea 'cerrado'. Se pagaba un premio con dinero que nadie
+      // habia aportado.
+      //
+      // AHORA: la RPC editar_remate(), que no recibe el estado siquiera. El
+      // estado se cambia con cerrar / cancelar / archivar, que son las que
+      // mueven el dinero. Y la base ya no acepta el UPDATE directo: se revoco
+      // en la migracion 20260928100000.
+      const { error: remErr } = await supabase.rpc("editar_remate", {
+        p_remate_id: remate.id,
+        p_porcentaje_casa: n(remateDraft.porcentaje_casa),
+        p_incremento_minimo: n(remateDraft.incremento_minimo),
+        p_tipo: remateDraft.tipo || remate.tipo || "vivo",
+        p_opens_at: buildCaracasTs(opensDateISO, opensTime24),
+        p_closes_at: buildCaracasTs(closesDateISO, closesTime24),
+      })
       if (remErr) throw new Error(remErr.message)
 
       if (deletedHorseIds.length > 0) {
@@ -1227,18 +1237,24 @@ export default function AdminRemateDetailPage() {
           <h2 className="text-base font-semibold">2) Remate</h2>
 
           <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* El estado dejo de ser editable a mano, y no es una restriccion
+                de pantalla: la base ya no acepta el UPDATE (migracion
+                20260928100000).
+
+                Ponerlo en 'cerrado' desde aqui NO le cobraba a nadie, y
+                liquidar_remate() solo exige que el estado sea 'cerrado'. Se
+                pagaba un premio con dinero que nadie habia aportado.
+
+                Se muestra, no se edita. Para cambiarlo estan los botones de
+                abajo, que son los que mueven el dinero. */}
             <div>
               <label className="text-xs text-zinc-400">Estado</label>
-              <select
-                value={remateDraft?.estado ?? "abierto"}
-                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, estado: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-              >
-                <option value="abierto">abierto</option>
-                <option value="cerrado">cerrado</option>
-                <option value="liquidado">liquidado</option>
-                <option value="cancelado">cancelado</option>
-              </select>
+              <div className="mt-1 w-full rounded-xl bg-zinc-950/40 border border-zinc-800 px-3 py-2 text-sm text-zinc-200">
+                {remateDraft?.estado ?? "abierto"}
+              </div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                Se cambia con los botones de cerrar, cancelar o archivar — no a mano.
+              </div>
             </div>
 
             <div>
