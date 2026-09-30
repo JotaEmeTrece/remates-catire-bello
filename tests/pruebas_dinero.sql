@@ -3020,6 +3020,78 @@ exception when others then
 end $$;
 
 
+
+-- ============================================================================
+--  P52 - La casa no juega en su propio remate
+--
+--  Regla de Jota desde el primer dia del proyecto. Hasta el 30/09 vivia SOLO
+--  en `app/remates/[id]/page.tsx:188`, que lee `es_admin` y esconde el
+--  formulario de puja. `hacer_puja` no tenia ni una linea sobre el rol.
+--
+--  Esconder un boton no es una regla. Un admin abre la consola del navegador,
+--  llama `supabase.rpc('hacer_puja', {...})` y puja igual -- en su propio
+--  remate, viendo desde el panel todas las pujas de todos los caballos, y
+--  decidiendo ademas cuando se cierra.
+--
+--  Por que importa mas que otros hallazgos del ADR-015: los demas eran
+--  numeros que se mostraban mal. Este es la frase con la que un licenciatario
+--  defiende su honradez delante de un jugador que lo acusa. Si la unica
+--  barrera es un `if` en JavaScript, esa frase no se puede sostener.
+--
+--  LA PRUEBA MIDE TRES COSAS:
+--    1. el admin es rechazado, y por NUESTRO codigo (P0001), no por otra cosa
+--    2. no se escribio ninguna puja: que rechace no basta
+--    3. un usuario normal sigue pudiendo pujar -- cerrar la puerta sin
+--       tapiar la entrada
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_juan uuid; v_rem uuid; v_h uuid;
+  v_rechazado boolean := false; v_sqlstate text := ''; v_msg text := '';
+  v_pujas_admin int; v_pujas_juan int;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 10000, true);   -- con saldo de sobra a proposito:
+                                                 -- lo que lo frena tiene que ser el rol,
+                                                 -- no la falta de dinero
+  v_juan  := _p.usuario('juan',  10000);
+  v_rem   := _p.escenario(2, 100, 25);
+  v_h     := _p.caballo(v_rem, 1);
+
+  -- 1) el admin lo intenta
+  perform _p.actuar_como(v_admin);
+  begin
+    perform public.hacer_puja(v_rem, v_h, 500, true);
+    v_msg := 'el admin PUDO pujar (mal)';
+  exception when others then
+    v_sqlstate := sqlstate;
+    if v_sqlstate = 'P0001' then
+      v_rechazado := true;
+      v_msg := 'rechazado por nuestro codigo (P0001): ' || sqlerrm;
+    else
+      v_msg := 'rechazado, pero por el motivo EQUIVOCADO (' || v_sqlstate || '): ' || sqlerrm;
+    end if;
+  end;
+
+  -- 2) y no escribio nada
+  select count(*) into v_pujas_admin from public.bids where user_id = v_admin;
+
+  -- 3) un usuario normal sigue pujando sin problema
+  perform _p.actuar_como(v_juan);
+  perform public.hacer_puja(v_rem, v_h, null, false);
+  select count(*) into v_pujas_juan from public.bids where user_id = v_juan;
+
+  perform _p.anotar(52, 'La casa no juega en su propio remate',
+    'el admin es rechazado con P0001 y no escribe ninguna puja; un usuario normal si puede',
+    v_rechazado and v_pujas_admin = 0 and v_pujas_juan = 1,
+    v_msg || ' | pujas del admin: ' || v_pujas_admin::text || ' (esperado 0)' ||
+    ' | pujas de juan: ' || v_pujas_juan::text || ' (esperado 1)');
+exception when others then
+  perform _p.anotar(52, 'La casa no juega en su propio remate',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;
