@@ -207,3 +207,79 @@ El costo es que el admin ve un error crudo de Postgres en el panel de Supabase. 
 **Consecuencias.** El texto del aviso lo compone la funcion a partir del valor anterior y el nuevo, asi que dice siempre la verdad y siempre en el mismo formato. `detalles` guarda los dos valores en jsonb para poder auditar sin parsear texto.
 
 **Qué la revertiría.** Nada previsto. Si aparecen mas campos editables en marcha, se suman al mismo mecanismo.
+
+---
+
+## ADR-015 · Una regla se implementa una vez, y vive donde vive el dato
+
+**Regla de Jota, 28/09/2026, literal:** *"Erradica todo lo que se haga en la DB y en el frontend y que son la misma cosa. Ya vemos que eso trae confusión y desastre. Lo que es DB que sea solo allá y lo que debe ser FE solo ahí."*
+
+**Contexto.** La auditoría del 28/09 encontró la misma regla implementada en varios sitios, tres veces:
+
+- **El pozo y la comisión de la casa:** en `liquidar_remate`, en `admin_contabilidad_resumen`, y en TypeScript en tres pantallas. Cinco implementaciones. Las del admin no filtraban caballos retirados y una tenía el 25% clavado, así que el admin aprobaba pagos viendo cifras que no eran las que se iban a pagar.
+- **Los mínimos de puja:** en `hacer_puja` y en el frontend. Divergieron el 23/09 y la pantalla mostraba un número mientras la base cobraba otro. Se resolvió con `remate_minimos()`.
+- **Quién va ganando un caballo:** en cuatro funciones SQL y en tres pantallas. Hoy coinciden. Es cuestión de tiempo.
+
+**Decisión.** Toda regla de negocio —lo que se cobra, lo que se paga, quién gana, qué cuenta y qué no— se implementa **una sola vez, en la base**, y se expone por RPC. **El frontend muestra, no calcula.**
+
+El criterio para decidir dónde va algo: *si el número tiene consecuencias en el dinero, va en la base.* Si es presentación —formato, colores, orden de una lista, qué se ve primero— va en el frontend y solo ahí.
+
+**Por qué.** No es preferencia de arquitectura: es que **dos implementaciones de la misma regla siempre acaban separándose, y la única pregunta es cuándo te enteras.** En este proyecto nos enteramos tres veces, y las tres por casualidad: mirando un número que no cuadraba. El caso del pozo llevaba desde enero.
+
+Y tiene una consecuencia que importa para licenciar: un licenciatario que configure el 20% y una pantalla que calcule el 25% no producen un error — producen un pago incorrecto con una interfaz que lo confirma.
+
+**Consecuencias.**
+- Las pantallas que hoy calculan el pozo pasan a consumir una RPC `remate_totales(p_remate_id)` que devuelva pozo, porcentaje, casa y neto **desde la misma consulta que `liquidar_remate`**. Cuatro copias → una.
+- `remate_minimos()` es el precedente y el patrón: devuelve por caballo todo lo que la pantalla necesita dibujar.
+- Ningún valor de negocio se escribe a mano en el frontend. Los que hoy lo están —el porcentaje por defecto, el precio de salida por defecto, el incremento— pasan a los ajustes de instalación.
+- Cuando una regla cambie, cambia en un sitio. Si hay que tocar dos archivos para cambiar una regla, la regla está mal puesta.
+
+**Qué la revertiría.** Un cálculo de presentación pura que necesite ser interactivo sin ida y vuelta al servidor — por ejemplo la simulación de la escalera al elegir el ritmo, que no mueve dinero y tiene que responder al teclear. Esos casos existen y son legítimos; la prueba para distinguirlos es si el número que sale puede diferir del que se cobra. Si puede, va en la base.
+
+---
+
+## ADR-016 · Los permisos son un inventario declarado, no una consecuencia
+
+**Contexto.** El 29/09, al probar A6, se descubrió que `ALTER DEFAULT PRIVILEGES` no es una rareza de este proyecto: la imagen de Supabase trae, antes de cualquier migración, `GRANT ALL ON TABLES TO anon, authenticated` para todo lo que cree `postgres` en `public`. Su propio `config.toml` lo llama *"matching the cloud default"*. Las quince tablas del esquema nacieron abiertas sin que ninguna migración lo escribiera, y por tanto sin que apareciera en ningún diff.
+
+Cerrarlo desde la base resultó imposible para las funciones. PostgreSQL concede `EXECUTE` a `PUBLIC` de fábrica, y su documentación dice literalmente que un revoke con `IN SCHEMA` **no hace nada**: *"per-schema default privileges can only add privileges to the global setting, not remove privileges granted by it."* La entrada global sí funciona, pero aplica a todos los esquemas: comprobado en un Postgres real, tras ponerla un `create extension citext` deja sus 23 funciones sin `EXECUTE` para `authenticated`, lo que rompe hasta un `where columna = 'x'`. En una base que opera un licenciatario, eso es una mina.
+
+**Decisión.** La base **no** falla cerrada en funciones. El arnés falla ruidoso.
+
+- `P47` enumera todas las funciones de `public` y las compara contra una lista blanca declarada. Una función que nadie declaró se pone roja.
+- `P48` hace lo mismo con las tablas, verbo por verbo, para `anon` y para `authenticated`.
+- Toda RPC nueva necesita dos cosas: su `grant execute` y su línea en el censo. Con solo una de las dos, el arnés está rojo.
+
+**Por qué.** El defecto real no era que algo naciera abierto: era que **nadie se enteraba**. Un censo que enumera el estado completo y falla ante lo no declarado convierte un silencio en un rojo, y no deja minas en casa de nadie.
+
+**Y una segunda razón, del mismo día.** `TRUNCATE` no pasa por la RLS — doc 17, 5.9: *"Operations that apply to the whole table, such as TRUNCATE and REFERENCES, are not subject to row security."* `anon` y `authenticated` tenían ese privilegio sobre las quince tablas. Ninguna política lo frenaba porque **ninguna política puede frenarlo**. Un modelo de seguridad que solo mira las políticas es ciego a esa clase entera de permisos. El censo mira el privilegio.
+
+**Consecuencias.**
+- Los revokes se escriben siempre en la forma completa: `from public, anon, authenticated`. Doce funciones llevaban `=X/postgres` y sobrevivieron a revokes que solo nombraban a `anon` — `mi_wallet_resumen` entre ellas, revocada el 25/09 y todavía ejecutable por `anon` el 29/09.
+- Los permisos no se prueban ejercitándolos: el arnés corre como `postgres` y se salta cualquier ACL. Se consultan con `has_table_privilege` y `has_function_privilege`.
+- Como el arnés no puede ver una rotura de permisos en la aplicación, **toda tanda que quite permisos se clica a mano contra la base local** antes de subir. De ahí sale `.env.development.local`.
+
+**Qué la revertiría.** Que Supabase permita fijar `auto_expose_new_tables = false` también en el proyecto alojado, no solo en el CLI local. Entonces la base sí podría fallar cerrada sin el coste de la entrada global, y el censo pasaría de ser la defensa a ser la comprobación de que la defensa sigue puesta.
+
+---
+
+## ADR-017 · El licenciatario manda sobre las reglas, no sobre la aritmética
+
+**Contexto.** Al cerrar la escritura directa de las tablas de dinero, Jota planteó la objeción correcta: *"tampoco puedo imponerle el porcentaje de utilidad a nadie"*. La pregunta de fondo es qué le queda en las manos a quien alquila la aplicación.
+
+**Decisión.** La línea que separa lo que se cierra de lo que no:
+
+> **Un parámetro de negocio es una ENTRADA que el licenciatario fija antes de que el dinero se mueva. Un saldo es una SALIDA que el sistema calcula después. Él manda sobre las reglas; no manda sobre la aritmética.**
+
+**Queda abierto, con guardia** — suyo, por RPC, con reglas y con aviso a los jugadores: porcentaje de la casa, precio de salida, incremento, escalera por caballo, textos de soporte, datos bancarios.
+
+**Queda cerrado** — nadie lo escribe a mano, tampoco el dueño: `wallets`, `wallet_movements`, `bids`, `race_results`, `profiles`, `withdraw_requests`, `deposit_requests`, `admin_actions`.
+
+**Por qué.** Cerrar el saldo no le quita poder al licenciatario: **le da la única defensa que va a tener el día que un jugador lo acuse de haberle tocado la cuenta.** Mientras un admin pueda escribir `wallet_movements` —que es justo lo que lee el cuadre— puede falsear los libros y la auditoría que comprueba los libros con la misma sesión, y por tanto no puede demostrar que no lo hizo. Es un argumento de venta, no una restricción.
+
+**Consecuencias.**
+- Las políticas `*_admin_all` sobre tablas de dinero pasan de `FOR ALL` a `FOR SELECT`. El admin sigue viendo todo; deja de poder escribirlo.
+- El porcentaje se fija remate a remate y se congela con la primera puja. Falta el valor por defecto de la instalación (A1), para que el número de arranque sea suyo y no el 25 que trae el código.
+- Al crear un remate se muestra siempre una confirmación con los tres números que mandan sobre el dinero —porcentaje, precio de salida, incremento— antes de guardar.
+
+**Qué la revertiría.** Un caso legítimo de corrección manual sobre un saldo. Existe: un error operativo que hay que deshacer. La respuesta no es reabrir la tabla, sino darle su propia RPC con motivo obligatorio y asiento en el libro, como `registrar_movimiento_casa`. Si algún día hace falta, se añade así.

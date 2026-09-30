@@ -936,11 +936,19 @@ export default function AdminRemateDetailPage() {
       const bid = h.id ? topByHorse.get(h.id) : undefined
       bruto += bid ? n(bid.monto) : n(h.precio_salida)
     }
-    const casaPct = 25
+    // ANTES: `const casaPct = 25`, clavado.
+    //
+    // Es el defecto C2 otra vez -- el `round(pozo * 0.75)` clavado que se
+    // arreglo en liquidar_remate y en la pantalla del jugador. Esta se quedo
+    // fuera, y es la peor de las tres: es donde el admin DECIDE. Le mostraba
+    // un premio que no era el que se iba a pagar.
+    //
+    // Encontrado el 28/09 por Jota, mirando que 30% de 200 no daba 50.
+    const casaPct = n(remateDraft?.porcentaje_casa ?? remate?.porcentaje_casa ?? 25)
     const casa = (bruto * casaPct) / 100
     const neto = bruto - casa
-    return { bruto, casa, neto }
-  }, [topByHorse, horses])
+    return { bruto, casa, neto, casaPct }
+  }, [topByHorse, horses, remateDraft?.porcentaje_casa, remate?.porcentaje_casa])
 
   const raceLabel = useMemo(() => {
     if (raceDraft) {
@@ -1623,7 +1631,10 @@ export default function AdminRemateDetailPage() {
               <div className="mt-1 text-lg font-semibold">{formatMoney(totals.bruto)} Bs</div>
             </div>
             <div className="rounded-xl bg-zinc-950/60 border border-zinc-800 p-3">
-              <div className="text-xs text-zinc-500">Casa</div>
+              {/* El porcentaje a la vista: si la cifra no cuadra, que se vea
+                  con que numero se calculo. Asi se encontro que estaba
+                  clavado en 25. */}
+              <div className="text-xs text-zinc-500">Casa ({totals.casaPct}%)</div>
               <div className="mt-1 text-lg font-semibold text-amber-300">{formatMoney(totals.casa)} Bs</div>
             </div>
             <div className="rounded-xl bg-zinc-950/60 border border-zinc-800 p-3">

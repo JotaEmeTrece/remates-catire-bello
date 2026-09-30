@@ -14,6 +14,7 @@ type RemateRow = {
   created_at: string | null
   archived_at?: string | null
   cancelled_at?: string | null
+  porcentaje_casa?: string | number | null
 }
 
 type RaceRow = {
@@ -150,7 +151,7 @@ export default function AdminRematesPage() {
 
       const { data, error: listErr } = await supabase
         .from("remates")
-        .select("id,nombre,estado,race_id,created_at,archived_at,cancelled_at")
+        .select("id,nombre,estado,race_id,created_at,archived_at,cancelled_at,porcentaje_casa")
         .order("created_at", { ascending: false })
         .limit(200)
 
@@ -273,14 +274,36 @@ export default function AdminRematesPage() {
     return map
   }, [bids])
 
-  const totals = useMemo(() => {
-    let bruto = 0
-    for (const [, bid] of topByHorse) bruto += n(bid.monto)
+  // El remate cuyo detalle esta desplegado: de ahi sale su porcentaje.
+  const remateAbierto = useMemo(
+    () => (openId ? remates.find((r) => r.id === openId) ?? null : null),
+    [openId, remates]
+  )
 
-    const casa = bruto * 0.25
+  const totals = useMemo(() => {
+    // DOS defectos arreglados aqui el 28/09, encontrados por Jota comparando
+    // esta pantalla con la del detalle y con la del jugador.
+    //
+    // 1) EL POZO IGNORABA LOS CABALLOS SIN PUJAS. Solo sumaba topByHorse, o
+    //    sea los que alguien pujo. Pero la regla del negocio es que los
+    //    caballos que nadie puja QUEDAN A LA CASA A SU PRECIO DE SALIDA Y
+    //    SUMAN AL POZO. Por eso la lista mostraba "Pozo bruto 0,00" en un
+    //    remate cuyo pozo real eran 250.
+    //
+    // 2) `bruto * 0.25` CLAVADO. Es el defecto C2 otra vez, el mismo
+    //    `round(pozo * 0.75)` que se arreglo en liquidar_remate. Tercera
+    //    copia del mismo error, en un tercer archivo.
+    let bruto = 0
+    for (const h of horses) {
+      const bid = h.id ? topByHorse.get(h.id) : undefined
+      bruto += bid ? n(bid.monto) : n(h.precio_salida)
+    }
+
+    const casaPct = n(remateAbierto?.porcentaje_casa ?? 25)
+    const casa = (bruto * casaPct) / 100
     const neto = bruto - casa
-    return { bruto, casa, neto }
-  }, [topByHorse])
+    return { bruto, casa, neto, casaPct }
+  }, [topByHorse, horses, remateAbierto?.porcentaje_casa])
 
   async function toggleDetail(remate: RemateRow) {
     if (openId === remate.id) {
@@ -537,7 +560,7 @@ export default function AdminRematesPage() {
                               <div className="mt-1 text-lg font-semibold">{formatMoney(totals.bruto)} Bs</div>
                             </div>
                             <div className="rounded-xl bg-zinc-900/60 border border-zinc-800 p-3">
-                              <div className="text-xs text-zinc-500">Casa (25%)</div>
+                              <div className="text-xs text-zinc-500">Casa ({totals.casaPct}%)</div>
                               <div className="mt-1 text-lg font-semibold text-amber-300">{formatMoney(totals.casa)} Bs</div>
                             </div>
                             <div className="rounded-xl bg-zinc-900/60 border border-zinc-800 p-3">
@@ -654,7 +677,7 @@ export default function AdminRematesPage() {
                                       <div className="mt-1 text-lg font-semibold">{formatMoney(totals.bruto)} Bs</div>
                                     </div>
                                     <div className="rounded-xl bg-zinc-900/60 border border-zinc-800 p-3">
-                                      <div className="text-xs text-zinc-500">Casa (25%)</div>
+                                      <div className="text-xs text-zinc-500">Casa ({totals.casaPct}%)</div>
                                       <div className="mt-1 text-lg font-semibold text-amber-300">{formatMoney(totals.casa)} Bs</div>
                                     </div>
                                     <div className="rounded-xl bg-zinc-900/60 border border-zinc-800 p-3">

@@ -1911,42 +1911,72 @@ end $$;
 
 
 -- ============================================================================
---  P38 - Cambiar el incremento con el remate en marcha deja aviso
+--  P38 - Cambiar el incremento deja aviso SIEMPRE, haya pujas o no
 --
---  Decision de Jota del 27/09: esto SI se permite -- un remate estancado
---  puede necesitar subir mas rapido -- pero no en silencio. El aviso lo
---  escribe el sistema, no el admin, por la misma razon que el asiento
---  `resultado_remate` del libro de la casa: un aviso que depende de que
---  alguien se acuerde de escribirlo no es un aviso.
+--  La primera version solo comprobaba el caso CON pujas, porque asi lo habia
+--  escrito yo en la migracion. Jota probo en produccion el caso sin pujas
+--  -- cambio el incremento, guardo, y no salio ningun aviso -- y tenia razon
+--  en esperar uno.
+--
+--  Peor: la inconsistencia iba al reves de lo que tendria sentido. El
+--  porcentaje SOLO se puede cambiar cuando NO hay pujas, asi que su aviso
+--  siempre salia en remates sin pujas. El incremento, que se puede cambiar
+--  siempre, era el que se callaba en ese mismo caso.
+--
+--  Un remate abierto es un remate que la gente esta mirando. Y callar hasta
+--  la primera puja le da al admin una ventana para cambiar las condiciones
+--  sin dejar rastro, que es lo contrario de para lo que existe la tabla.
 -- ============================================================================
 do $$
 declare
-  v_admin uuid; v_u1 uuid; v_rem uuid; v_h1 uuid;
-  v_aviso record; v_nuevo numeric;
+  v_admin uuid; v_u1 uuid;
+  v_rem_sin uuid; v_rem_con uuid; v_h1 uuid; v_h2 uuid;
+  v_avisos_sin integer := 0; v_avisos_con integer := 0;
+  v_existe boolean;
 begin
   perform _p.limpiar();
+
+  select exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'editar_remate'
+  ) into v_existe;
+
+  if not v_existe then
+    perform _p.anotar(38, 'Cambiar el incremento deja aviso siempre, haya pujas o no',
+      'un aviso en el remate sin pujas y otro en el que tiene',
+      false, 'editar_remate NO EXISTE: la migracion no esta aplicada');
+    return;
+  end if;
+
   v_admin := _p.usuario('admin', 0, true);
   v_u1    := _p.usuario('juan', 10000);
-  v_rem   := _p.escenario(2, 100, 25);
-  v_h1    := _p.caballo(v_rem, 1);
 
-  perform _p.actuar_como(v_u1);
-  perform public.hacer_puja(v_rem, v_h1, 100, true);
-
+  -- mitad 1: remate SIN pujas
+  v_rem_sin := _p.escenario(2, 100, 25);
+  v_h1 := _p.caballo(v_rem_sin, 1);
   perform _p.actuar_como(v_admin);
-  perform public.editar_remate(v_rem, null, 75, null, null, null);
+  perform public.editar_remate(v_rem_sin, null, 75, null, null, null);
 
-  select incremento_minimo into v_nuevo from public.remates where id = v_rem;
-  select * into v_aviso from public.remate_avisos
-   where remate_id = v_rem and tipo = 'incremento' limit 1;
+  select count(*) into v_avisos_sin
+  from public.remate_avisos where remate_id = v_rem_sin and tipo = 'incremento';
 
-  perform _p.anotar(38, 'Cambiar el incremento con pujas deja aviso para los jugadores',
-    'incremento = 75 y un aviso de tipo incremento',
-    v_nuevo = 75 and v_aviso.id is not null,
-    'incremento=' || coalesce(v_nuevo::text,'null') ||
-    ' | aviso=' || coalesce(v_aviso.mensaje, 'NINGUNO'));
+  -- mitad 2: remate CON pujas
+  v_rem_con := _p.escenario(2, 100, 25);
+  v_h2 := _p.caballo(v_rem_con, 1);
+  perform _p.actuar_como(v_u1);
+  perform public.hacer_puja(v_rem_con, v_h2, 100, true);
+  perform _p.actuar_como(v_admin);
+  perform public.editar_remate(v_rem_con, null, 80, null, null, null);
+
+  select count(*) into v_avisos_con
+  from public.remate_avisos where remate_id = v_rem_con and tipo = 'incremento';
+
+  perform _p.anotar(38, 'Cambiar el incremento deja aviso siempre, haya pujas o no',
+    'un aviso en el remate sin pujas y otro en el que tiene',
+    v_avisos_sin = 1 and v_avisos_con = 1,
+    'sin pujas: ' || v_avisos_sin::text || ' aviso(s) | con pujas: ' || v_avisos_con::text || ' aviso(s)');
 exception when others then
-  perform _p.anotar(38, 'Cambiar el incremento con pujas deja aviso para los jugadores',
+  perform _p.anotar(38, 'Cambiar el incremento deja aviso siempre, haya pujas o no',
     'ver arriba', false, 'excepcion: ' || sqlerrm);
 end $$;
 
@@ -2044,6 +2074,819 @@ exception when others then
 end $$;
 
 
+
+-- ============================================================================
+--  P40 a P46 - LA AUDITORIA DEL 28/09, TANDA 1
+--
+--  Siete pruebas para los nueve arreglos de
+--  20260929100000_auditoria_tanda1.sql. Todas se escribieron ANTES de aplicar
+--  la migracion y todas tienen que salir en ROJO primero. Una prueba que nace
+--  verde no prueba nada: ver la cabecera de este archivo y P39.
+--
+--  Los tres arreglos de concurrencia -- A2 (`for share` en hacer_puja), A4
+--  (candado de caja) y la carrera de set_ganador_carrera -- NO estan aqui.
+--  No se pueden reproducir con una sola conexion: hacen falta dos sesiones
+--  intercaladas. Van en tests/concurrencia.sql.
+--  Lo que SI se puede probar aqui de D1 es la red que lo hace imposible: el
+--  unique. Es exactamente la diferencia entre probar la carrera y probar la
+--  valla.
+-- ============================================================================
+
+
+-- ============================================================================
+--  P40 - Retirar un caballo y DESPUES cancelar el remate no paga dos veces
+--
+--  Hallazgo A3. cancelar_remate sumaba solo los movimientos 'apuesta_cobro' e
+--  ignoraba las 'apuesta_devolucion' ya emitidas sobre el mismo remate:
+--
+--    juan lidera dos caballos -> al cerrar se le cobran 800
+--    se retira uno           -> retirar_caballo le devuelve 300 (neto: 500)
+--    se suspende la carrera  -> cancelar_remate le devolvia OTROS 800
+--
+--  juan terminaba con 10.300 habiendo puesto 10.000. Los 300 salian de la
+--  caja del licenciatario y ninguna pantalla lo decia.
+--
+--  liquidar_remate, de la misma tajada y con el mismo problema delante, SI
+--  los neteaba. Su comentario lo explicaba. cancelar_remate se quedo con el
+--  conjunto incompleto.
+--
+--  Se mide el saldo en los CUATRO momentos a proposito. Si solo se midiera el
+--  final, la prueba pasaria en verde tambien en el caso de que ni el cierre ni
+--  el retiro hubieran hecho nada: 10.000 - 0 + 0 + 0 = 10.000.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
+  v_s0 numeric; v_s1 numeric; v_s2 numeric; v_s3 numeric;
+  v_devoluciones numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 10000);
+  v_rem   := _p.escenario(3, 100, 25);
+  v_h1    := _p.caballo(v_rem, 1);
+  v_h2    := _p.caballo(v_rem, 2);
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, 500, true);
+  perform public.hacer_puja(v_rem, v_h2, 300, true);
+  v_s0 := _p.saldo(v_u);                      -- 10000: pujar no cobra (modelo v2)
+
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+  v_s1 := _p.saldo(v_u);                      -- 9200: se cobran los dos, 800
+
+  perform public.retirar_caballo(v_h2, 'Lesion en el paddock');
+  v_s2 := _p.saldo(v_u);                      -- 9500: devuelve 300, neto 500
+
+  perform public.cancelar_remate(v_rem, 'Carrera suspendida por lluvia');
+  v_s3 := _p.saldo(v_u);                      -- 10000: devuelve los 500 que faltan
+
+  select coalesce(sum(m.monto),0) into v_devoluciones
+  from public.wallet_movements m
+  join public.wallets w on w.id = m.wallet_id
+  where w.user_id = v_u and m.tipo = 'apuesta_devolucion';
+
+  perform _p.anotar(40, 'Retirar un caballo y luego cancelar no reembolsa dos veces',
+    '10000 -> 9200 (cierre) -> 9500 (retiro) -> 10000 (cancelacion), devuelto total 800',
+    v_s0 = 10000 and v_s1 = 9200 and v_s2 = 9500 and v_s3 = 10000 and v_devoluciones = 800,
+    'pujas: ' || v_s0::text || ' | cierre: ' || v_s1::text ||
+    ' | retiro: ' || v_s2::text || ' | cancelacion: ' || v_s3::text ||
+    ' (esperado 10000; si da 10300 cancelar_remate ignoro la devolucion previa)' ||
+    ' | devuelto total: ' || v_devoluciones::text || ' (esperado 800)');
+exception when others then
+  perform _p.anotar(40, 'Retirar un caballo y luego cancelar no reembolsa dos veces',
+    'saldo final = 10000', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P41 - Un admin no puede acunar saldo escribiendo deposit_requests
+--
+--  Hallazgo A5. La baseline daba `GRANT SELECT, INSERT, UPDATE` sobre la
+--  tabla a `authenticated`, y la politica `deposit_admin_all` era FOR ALL con
+--  `USING is_admin() WITH CHECK is_admin()`. Las dos cosas juntas: cualquier
+--  admin podia insertar una fila 'aprobado' desde la consola del navegador, o
+--  pasar a 'aprobado' una pendiente, sin pasar por aprobar_recarga.
+--
+--  Es la misma forma exacta del agujero de `remates.estado` que cerro la 3.2:
+--  una RPC bien hecha al lado de una puerta abierta.
+--
+--  Igual que P33 y P36, esto se consulta con has_table_privilege en vez de
+--  ejercitarlo: el arnes corre como `postgres`, que se salta cualquier ACL.
+--
+--  La segunda mitad importa tanto como la primera: cerrar la puerta sin
+--  romper la RPC. solicitar_recarga y aprobar_recarga son `definer`, asi que
+--  tienen que seguir funcionando.
+-- ============================================================================
+do $$
+declare
+  v_auth_ins boolean; v_auth_upd boolean; v_auth_del boolean; v_auth_sel boolean;
+  v_anon_ins boolean; v_anon_upd boolean; v_anon_sel boolean;
+  v_pol_all boolean; v_pol_select boolean; v_pol_own boolean;
+  v_admin uuid; v_u uuid; v_dep uuid; v_saldo numeric;
+begin
+  perform _p.limpiar();
+
+  v_auth_ins := has_table_privilege('authenticated', 'public.deposit_requests', 'insert');
+  v_auth_upd := has_table_privilege('authenticated', 'public.deposit_requests', 'update');
+  v_auth_del := has_table_privilege('authenticated', 'public.deposit_requests', 'delete');
+  -- leer SI: el usuario ve sus recargas y el admin las suyas, cada uno por su politica
+  v_auth_sel := has_table_privilege('authenticated', 'public.deposit_requests', 'select');
+  v_anon_ins := has_table_privilege('anon', 'public.deposit_requests', 'insert');
+  v_anon_upd := has_table_privilege('anon', 'public.deposit_requests', 'update');
+  v_anon_sel := has_table_privilege('anon', 'public.deposit_requests', 'select');
+
+  -- la politica FOR ALL tiene que haber desaparecido, no basta con el revoke:
+  -- las politicas permisivas se SUMAN con OR, y dejarla ahi seria dejar puesta
+  -- la mitad del agujero esperando a que alguien reponga el grant.
+  select exists (select 1 from pg_policies
+                 where schemaname='public' and tablename='deposit_requests'
+                   and policyname='deposit_admin_all') into v_pol_all;
+  select exists (select 1 from pg_policies
+                 where schemaname='public' and tablename='deposit_requests'
+                   and policyname='deposit_admin_select' and cmd='SELECT') into v_pol_select;
+  select exists (select 1 from pg_policies
+                 where schemaname='public' and tablename='deposit_requests'
+                   and policyname='deposit_select_own') into v_pol_own;
+
+  -- y la via legitima tiene que seguir viva
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 0);
+  perform _p.actuar_como(v_u);
+  perform public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF-A5', current_date);
+  select id into v_dep from public.deposit_requests where user_id = v_u;
+  perform _p.actuar_como(v_admin);
+  perform public.aprobar_recarga(v_dep);
+  v_saldo := _p.saldo(v_u);
+
+  perform _p.anotar(41, 'deposit_requests no se escribe directo, ni por un admin',
+    'authenticated y anon sin insert/update/delete; select sigue; deposit_admin_all borrada; la recarga por RPC sigue funcionando',
+    (not v_auth_ins) and (not v_auth_upd) and (not v_auth_del) and v_auth_sel
+      and (not v_anon_ins) and (not v_anon_upd) and (not v_anon_sel)
+      and (not v_pol_all) and v_pol_select and v_pol_own
+      and v_saldo = 1000,
+    'auth[ins=' || v_auth_ins::text || ',upd=' || v_auth_upd::text ||
+    ',del=' || v_auth_del::text || ',sel=' || v_auth_sel::text || ']' ||
+    ' anon[ins=' || v_anon_ins::text || ',upd=' || v_anon_upd::text ||
+    ',sel=' || v_anon_sel::text || ']' ||
+    ' politicas[admin_all=' || v_pol_all::text || ',admin_select=' || v_pol_select::text ||
+    ',select_own=' || v_pol_own::text || ']' ||
+    ' | saldo tras recarga por RPC: ' || coalesce(v_saldo,-1)::text || ' (esperado 1000)');
+exception when others then
+  perform _p.anotar(41, 'deposit_requests no se escribe directo, ni por un admin',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P42 - Una tabla nueva nace CERRADA (y una funcion nueva, no)
+--
+--  Hallazgo A6, y la mina estructural del esquema. La baseline trae:
+--
+--    ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+--      GRANT ALL ON TABLES    TO anon, authenticated;
+--    ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+--      GRANT ALL ON FUNCTIONS TO anon, authenticated;
+--
+--  No hace falta un grant para quedar expuesto: hace falta un revoke para no
+--  estarlo. Y eso no sale en ningun diff, porque el diff de la migracion que
+--  crea la tabla no dice nada de permisos.
+--
+--  Esta prueba no mira el texto de la migracion: crea de verdad una tabla y
+--  una funcion en `public` como postgres -- que es exactamente lo que hace
+--  cada migracion -- y pregunta por su ACL. Luego las borra.
+--
+--  LA FUNCION SE MIDE PERO NO SE EXIGE, Y NO ES PEREZA.
+--
+--  PostgreSQL le da EXECUTE a PUBLIC en toda funcion nueva, de fabrica, y
+--  `authenticated` hereda de PUBLIC. Eso solo se quita con una entrada GLOBAL
+--  de default privileges, sin `IN SCHEMA`, que aplica a todos los esquemas y
+--  deja sin EXECUTE tambien a cualquier extension que se instale despues
+--  (comprobado: `create extension citext` con esa entrada puesta deja sus 23
+--  funciones cerradas y rompe hasta un `where columna = 'x'`). En una base que
+--  opera el licenciatario, eso es una mina.
+--
+--  Decision de Jota (29/09): la base no falla cerrada en funciones; el arnes
+--  falla ruidoso. El censo esta en P47, que enumera TODAS las funciones de
+--  `public` contra una lista blanca. Aqui se deja medido para que el numero
+--  quede a la vista y nadie crea que A6 cubrio algo que no cubre.
+-- ============================================================================
+do $$
+declare
+  v_tabla_sel_auth boolean; v_tabla_ins_auth boolean; v_tabla_sel_anon boolean;
+  v_sec_auth boolean;
+  v_fn_auth boolean;
+begin
+  execute 'drop table if exists public._p_acl_tabla';
+  execute 'drop function if exists public._p_acl_funcion()';
+
+  execute 'create table public._p_acl_tabla (id serial primary key, x int)';
+  execute 'create function public._p_acl_funcion() returns int language sql as ''select 1''';
+
+  v_tabla_sel_auth := has_table_privilege('authenticated', 'public._p_acl_tabla', 'select');
+  v_tabla_ins_auth := has_table_privilege('authenticated', 'public._p_acl_tabla', 'insert');
+  v_tabla_sel_anon := has_table_privilege('anon',          'public._p_acl_tabla', 'select');
+  v_sec_auth       := has_sequence_privilege('authenticated', 'public._p_acl_tabla_id_seq', 'usage');
+  v_fn_auth        := has_function_privilege('authenticated', 'public._p_acl_funcion()', 'execute');
+
+  execute 'drop table if exists public._p_acl_tabla';
+  execute 'drop function if exists public._p_acl_funcion()';
+
+  perform _p.anotar(42, 'Una tabla nueva y su secuencia nacen cerradas',
+    'sin privilegios para anon ni authenticated en la tabla ni en la secuencia',
+    (not v_tabla_sel_auth) and (not v_tabla_ins_auth) and (not v_tabla_sel_anon)
+      and (not v_sec_auth),
+    'tabla[auth_sel=' || v_tabla_sel_auth::text || ',auth_ins=' || v_tabla_ins_auth::text ||
+    ',anon_sel=' || v_tabla_sel_anon::text || ']' ||
+    ' secuencia[auth_usage=' || v_sec_auth::text || ']' ||
+    ' | funcion nueva ejecutable por authenticated=' || v_fn_auth::text ||
+    ' (NO se exige aqui: PostgreSQL se lo da a PUBLIC de fabrica y solo se quita' ||
+    ' con una entrada global que romperia las extensiones. El censo es P47)');
+exception when others then
+  execute 'drop table if exists public._p_acl_tabla';
+  execute 'drop function if exists public._p_acl_funcion()';
+  perform _p.anotar(42, 'Una tabla nueva y su secuencia nacen cerradas',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P43 - La caja del licenciatario no la lee un usuario cualquiera
+--
+--  Hallazgo A7. El revoke de 20260923150000:100 decia:
+--
+--    revoke all on function public.dinero_casa_disponible() from public, anon;
+--
+--  Faltaba `authenticated`, y por A6 la funcion ya tenia el execute desde que
+--  se creo. Cualquier registrado podia abrir la consola, llamar
+--  supabase.rpc('dinero_casa_disponible') y ver recargas, retiros, el saldo
+--  agregado de todos los usuarios y el capital propio del licenciatario.
+--
+--  Mismo defecto que la 2.22 (casa_resumen), en la misma migracion que lo
+--  arreglo, en la funcion de al lado.
+--
+--  La segunda mitad comprueba que cerrarla no rompio a quien la usa de
+--  verdad: liquidar_remate y casa_resumen son `definer` y corren como
+--  postgres, asi que la guarda de solvencia tiene que seguir funcionando.
+-- ============================================================================
+do $$
+declare
+  v_anon boolean; v_auth boolean; v_publico boolean;
+  v_admin uuid; v_u uuid; v_rem uuid; v_h uuid; v_caja numeric; v_liquido boolean := false;
+begin
+  perform _p.limpiar();
+
+  v_anon := has_function_privilege('anon',          'public.dinero_casa_disponible()', 'execute');
+  v_auth := has_function_privilege('authenticated', 'public.dinero_casa_disponible()', 'execute');
+  -- el ACL de PUBLIC se mira aparte: authenticated hereda de el, y si quedara
+  -- ahi el revoke a authenticated no serviria de nada
+  --
+  --  OJO CON COMO SE PREGUNTA ESTO. La primera version que escribi hacia
+  --  `array_to_string(proacl, ',') like '=X/%'`, y solo habria acertado si la
+  --  entrada de PUBLIC fuera la PRIMERA del arreglo. Ademas, `proacl` nulo
+  --  significa "ACL por defecto", que para una funcion incluye EXECUTE para
+  --  PUBLIC: el like habria dado false justo en el caso mas abierto posible.
+  --  aclexplode + grantee = 0 (PUBLIC) es la forma correcta, y acldefault
+  --  cubre el nulo.
+  select coalesce(
+    (select bool_or(a.privilege_type = 'EXECUTE')
+     from pg_proc p
+     join pg_namespace n on n.oid = p.pronamespace
+     cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+     where n.nspname = 'public' and p.proname = 'dinero_casa_disponible'
+       and a.grantee = 0),
+    false) into v_publico;
+
+  -- y la via interna tiene que seguir viva
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000);
+  v_rem   := _p.escenario(2, 100);
+  v_h     := _p.caballo(v_rem, 1);
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h, null, false);
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+  perform public.set_ganador_carrera(v_rem, 2);     -- gana un caballo de la casa
+  perform public.liquidar_remate(v_rem);
+  v_liquido := (select estado from public.remates where id = v_rem) = 'liquidado';
+  v_caja := public.dinero_casa_disponible();
+
+  perform _p.anotar(43, 'dinero_casa_disponible() cerrada a anon y a authenticated',
+    'sin execute para anon, authenticated ni PUBLIC; la liquidacion sigue funcionando',
+    (not v_anon) and (not v_auth) and (not v_publico) and v_liquido and v_caja = 100,
+    'anon=' || v_anon::text || ' authenticated=' || v_auth::text ||
+    ' PUBLIC=' || v_publico::text ||
+    ' | liquido=' || v_liquido::text || ' caja=' || coalesce(v_caja,-1)::text || ' (esperado 100)');
+exception when others then
+  perform _p.anotar(43, 'dinero_casa_disponible() cerrada a anon y a authenticated',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P44 - La base rechaza un saldo negativo, venga de donde venga
+--
+--  Hallazgo D3. El invariante `saldo_disponible >= compromiso_usuario()` --
+--  que implica saldo >= 0 -- vivia EXCLUSIVAMENTE dentro de tres cuerpos
+--  PL/pgSQL. Cualquier ruta que no pasara por ellos dejaba el saldo en
+--  negativo sin una sola queja: service_role, un psql de mantenimiento, una
+--  migracion futura, o el propio agujero A2.
+--
+--  Un check no es redundante con las guardas de aplicacion. Es la ultima red,
+--  y es la unica que no se puede saltar: ni siquiera `postgres` la esquiva.
+--  Por eso esta prueba puede ejercitarla de verdad en vez de consultarla.
+--
+--  23514 = check_violation. Si saltara cualquier otro codigo, la prueba tiene
+--  que decirlo: seria otro problema disfrazado de exito.
+-- ============================================================================
+do $$
+declare
+  v_u uuid; v_constraint_existe boolean; v_constraint_validada boolean;
+  v_disp_bloqueado boolean := false; v_bloq_bloqueado boolean := false;
+  v_saldo_final numeric; v_sqlstate text; v_msg text := '';
+begin
+  perform _p.limpiar();
+
+  select exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.wallets'::regclass
+      and conname = 'wallets_saldo_no_negativo'),
+    coalesce((select convalidated from pg_constraint
+      where conrelid = 'public.wallets'::regclass
+        and conname = 'wallets_saldo_no_negativo'), false)
+  into v_constraint_existe, v_constraint_validada;
+
+  if not v_constraint_existe then
+    perform _p.anotar(44, 'La base rechaza un saldo negativo',
+      'check wallets_saldo_no_negativo, validado, rechaza con 23514',
+      false, 'el check NO EXISTE: la migracion no esta aplicada');
+    return;
+  end if;
+
+  v_u := _p.usuario('juan', 500);
+
+  begin
+    update public.wallets set saldo_disponible = -1 where user_id = v_u;
+    v_msg := 'dejo poner saldo_disponible en -1 (mal)';
+  exception when others then
+    v_sqlstate := sqlstate;
+    if v_sqlstate = '23514' then
+      v_disp_bloqueado := true;
+      v_msg := 'saldo_disponible negativo rechazado (23514)';
+    else
+      v_msg := 'rechazado, pero por el motivo EQUIVOCADO (' || v_sqlstate || '): ' || sqlerrm;
+    end if;
+  end;
+
+  begin
+    update public.wallets set saldo_bloqueado = -1 where user_id = v_u;
+  exception when others then
+    if sqlstate = '23514' then v_bloq_bloqueado := true; end if;
+  end;
+
+  -- que rechace no basta: tiene que no haber escrito nada
+  v_saldo_final := _p.saldo(v_u);
+
+  perform _p.anotar(44, 'La base rechaza un saldo negativo',
+    'check validado; los dos saldos rechazan con 23514 y no se escribe nada',
+    v_constraint_validada and v_disp_bloqueado and v_bloq_bloqueado and v_saldo_final = 500,
+    'validado=' || v_constraint_validada::text || ' | ' || v_msg ||
+    ' | bloqueado negativo rechazado=' || v_bloq_bloqueado::text ||
+    ' | saldo sigue en ' || coalesce(v_saldo_final,-1)::text || ' (esperado 500)');
+exception when others then
+  perform _p.anotar(44, 'La base rechaza un saldo negativo',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P45 - Una carrera no puede tener dos ganadores
+--
+--  Hallazgo D1. set_ganador_carrera es un update-then-insert sin candado
+--  sobre una tabla sin restriccion unica:
+--
+--    update race_results set ganador_horse_id = ... where race_id = ...;
+--    if not found then insert into race_results (...) values (...); end if;
+--
+--  Dos llamadas simultaneas -- dos admins, un doble clic, el reintento de un
+--  fetch que no respondio -- hacen las dos un update que afecta 0 filas, las
+--  dos entran al `if not found`, y las dos insertan. Quedan dos filas para la
+--  misma carrera, posiblemente con ganadores distintos. Y liquidar_remate lee
+--  con `select ... into` sin `limit` y sin `strict`: toma la primera que
+--  devuelva el plan, sin error y sin aviso. El premio entero se paga a un
+--  usuario indeterminado.
+--
+--  ESTO NO PRUEBA LA CARRERA: probarla hace falta dos conexiones, y eso va en
+--  tests/concurrencia.sql. Prueba la VALLA que la vuelve imposible. Es una
+--  distincion que conviene no perder de vista: aqui se comprueba que la
+--  segunda fila no cabe, no que dos sesiones no lleguen a la vez.
+--
+--  23505 = unique_violation.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u uuid; v_rem uuid; v_h1 uuid; v_h2 uuid; v_race uuid;
+  v_existe boolean; v_segunda_bloqueada boolean := false;
+  v_filas integer; v_ganador uuid; v_sqlstate text; v_msg text := '';
+begin
+  perform _p.limpiar();
+
+  select exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.race_results'::regclass
+      and contype = 'u'
+      and conkey = (select array_agg(attnum) from pg_attribute
+                    where attrelid = 'public.race_results'::regclass and attname = 'race_id')
+  ) into v_existe;
+
+  if not v_existe then
+    perform _p.anotar(45, 'Una carrera no puede tener dos resultados',
+      'unique sobre race_id; el segundo insert se rechaza con 23505',
+      false, 'el unique sobre race_id NO EXISTE: la migracion no esta aplicada');
+    return;
+  end if;
+
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 10000);
+  v_rem   := _p.escenario(2, 100);
+  v_h1    := _p.caballo(v_rem, 1);
+  v_h2    := _p.caballo(v_rem, 2);
+  select race_id into v_race from public.remates where id = v_rem;
+
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, 200, true);
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+  perform public.set_ganador_carrera(v_rem, 1);
+
+  -- la segunda fila es lo que dejaba entrar la carrera. Tiene que rebotar.
+  begin
+    insert into public.race_results (race_id, ganador_horse_id) values (v_race, v_h2);
+    v_msg := 'dejo insertar un SEGUNDO resultado para la misma carrera (mal)';
+  exception when others then
+    v_sqlstate := sqlstate;
+    if v_sqlstate = '23505' then
+      v_segunda_bloqueada := true;
+      v_msg := 'segundo resultado rechazado por el unique (23505)';
+    else
+      v_msg := 'rechazado, pero por el motivo EQUIVOCADO (' || v_sqlstate || '): ' || sqlerrm;
+    end if;
+  end;
+
+  -- y llamar dos veces a la RPC tiene que seguir siendo legitimo: corrige, no duplica
+  perform public.set_ganador_carrera(v_rem, 2);
+  select count(*) into v_filas from public.race_results where race_id = v_race;
+  select ganador_horse_id into v_ganador from public.race_results where race_id = v_race;
+
+  perform _p.anotar(45, 'Una carrera no puede tener dos resultados',
+    'el insert directo rebota con 23505; llamar dos veces a la RPC corrige el ganador sin duplicar',
+    v_segunda_bloqueada and v_filas = 1 and v_ganador = v_h2,
+    v_msg || ' | filas para la carrera: ' || v_filas::text || ' (esperado 1)' ||
+    ' | la segunda llamada corrigio el ganador: ' || (v_ganador = v_h2)::text);
+exception when others then
+  perform _p.anotar(45, 'Una carrera no puede tener dos resultados',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P46 - El panel de contabilidad ve el capital propio, igual que la guarda
+--
+--  Hallazgo B5. La tarea 2.18 anadio el libro de la casa y actualizo
+--  dinero_casa_disponible() para que sumara los asientos manuales. A
+--  admin_contabilidad_resumen() no. Desde ese dia la guarda de solvencia y la
+--  pantalla que el admin mira daban numeros distintos sobre la misma caja.
+--
+--  Estaba a la vista en el propio arnes: en P30, tras un aporte de 5.000, la
+--  funcion daba 5.500 y el panel seguia diciendo 500. Nadie los comparo
+--  DESPUES de un aporte.
+--
+--  Y P19, que es la prueba que existe para comparar estos dos numeros, no lo
+--  detectaba: su escenario no tiene ningun asiento manual, asi que el termino
+--  que faltaba valia cero en los dos momentos que mide. Una prueba que compara
+--  dos cosas iguales en el unico caso en que no pueden diferir.
+--
+--  Esta lo mide justo donde duele: con un aporte de capital encima.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u uuid;
+  v_funcion numeric; v_panel numeric;
+begin
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000);     -- recarga aprobada de 1000, wallet 1000
+
+  -- sin asientos manuales la caja es 1000 - 1000 = 0: es el caso ciego de P19
+  perform _p.actuar_como(v_admin);
+  perform public.registrar_movimiento_casa('aporte_capital', 5000, 'Capital inicial del licenciatario');
+
+  v_funcion := public.dinero_casa_disponible();
+  v_panel   := (public.admin_contabilidad_resumen() ->> 'dinero_casa')::numeric;
+
+  perform _p.anotar(46, 'El panel de contabilidad suma el capital propio',
+    'funcion y panel dan lo mismo, y los dos dan 5000',
+    v_funcion = v_panel and v_funcion = 5000,
+    'funcion: ' || coalesce(v_funcion,-1)::text ||
+    ' | panel: ' || coalesce(v_panel,-1)::text ||
+    ' (esperado 5000 en los dos; si el panel da 0 no esta sumando el libro de la casa)');
+exception when others then
+  perform _p.anotar(46, 'El panel de contabilidad suma el capital propio',
+    'funcion y panel dan 5000 los dos', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+
+-- ============================================================================
+--  P47 - CENSO DE FUNCIONES: ninguna queda abierta sin estar declarada
+--
+--  Esta prueba existe por lo que paso el 29/09 y no por una teoria.
+--
+--  A6 quiso que "lo nuevo nazca cerrado" y resulto que en funciones no se
+--  puede: PostgreSQL le da EXECUTE a PUBLIC de fabrica y eso solo se quita
+--  con una entrada global de default privileges que rompe las extensiones
+--  (comprobado con citext). Decision de Jota: la base no falla cerrada, el
+--  arnes falla ruidoso.
+--
+--  Esto es el ruido. Enumera TODAS las funciones de `public` y compara con lo
+--  declarado. Tres cosas se ponen rojas:
+--
+--    - una funcion declarada `cerrada` que alguien puede ejecutar
+--    - una funcion declarada abierta que ya no lo esta (grant perdido)
+--    - una funcion que NO ESTA DECLARADA. Esa es la importante: es la RPC
+--      nueva que nacio abierta y que nadie iba a ver en el diff.
+--
+--  La lista de abajo no es una foto de como esta la base: es como TIENE que
+--  estar. Se saco de cruzar las 19 RPC que llama `app/` y `lib/` con el
+--  inventario real de funciones del 29/09.
+--
+--  OJO AL ANADIR UNA RPC: hay que anadirla aqui Y darle su grant. Si solo se
+--  le da el grant, esta prueba se pone roja. Es a proposito.
+-- ============================================================================
+do $$
+declare
+  r record;
+  v_total int := 0; v_fallos int := 0; v_sin_declarar int := 0;
+  v_detalle text := '';
+begin
+  for r in
+    with esperado(nombre, quien) as (values
+      -- internas: solo las llaman otras funciones definer, que corren como postgres
+      ('_cerrar_remate_interno',          'cerrada'),
+      ('_incremento_aplicable',           'cerrada'),
+      ('compromiso_usuario',              'cerrada'),
+      ('dinero_casa_disponible',          'cerrada'),
+      ('log_admin_action',                'cerrada'),
+      -- el cron, con clave de servicio
+      ('auto_cerrar_remates',             'cerrada'),
+      -- funciones de trigger: disparan sin EXECUTE (comprobado 29/09)
+      ('handle_new_user',                 'cerrada'),
+      ('tr_check_admin_immutability',     'cerrada'),
+      ('set_support_settings_updated_at', 'cerrada'),
+      -- sin uso en la aplicacion
+      ('get_usernames',                   'cerrada'),
+      ('promover_usuario',                'cerrada'),
+      ('set_admin',                       'cerrada'),
+      -- RPC de usuario con sesion
+      ('admin_contabilidad_resumen',      'auth'),
+      ('aprobar_recarga',                 'auth'),
+      ('archivar_remate',                 'auth'),
+      ('cancelar_remate',                 'auth'),
+      ('casa_resumen',                    'auth'),
+      ('cerrar_remate',                   'auth'),
+      ('editar_remate',                   'auth'),
+      ('hacer_puja',                      'auth'),
+      ('liquidar_remate',                 'auth'),
+      ('listar_wallets_superadmin',       'auth'),
+      ('mi_wallet_resumen',               'auth'),
+      ('procesar_retiro',                 'auth'),
+      ('rechazar_recarga',                'auth'),
+      ('registrar_movimiento_casa',       'auth'),
+      ('retirar_caballo',                 'auth'),
+      ('set_ganador_carrera',             'auth'),
+      ('solicitar_recarga',               'auth'),
+      ('solicitar_retiro',                'auth'),
+      -- las invocan las politicas RLS, que corren con los permisos de quien consulta
+      ('is_admin',                        'auth'),
+      ('is_super_admin',                  'auth'),
+      -- informacion publica del remate: la pantalla se ve sin sesion
+      ('remate_minimos',                  'anon'),
+      ('listar_pujas_publicas',           'anon')
+    )
+    select p.proname as nombre,
+           has_function_privilege('authenticated', p.oid, 'execute') as auth,
+           has_function_privilege('anon',          p.oid, 'execute') as anon,
+           e.quien
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    left join esperado e on e.nombre = p.proname
+    where n.nspname = 'public' and p.prokind = 'f'
+    order by p.proname
+  loop
+    v_total := v_total + 1;
+
+    if r.quien is null then
+      v_sin_declarar := v_sin_declarar + 1;
+      v_detalle := v_detalle || ' | SIN DECLARAR: ' || r.nombre ||
+                   '(auth=' || r.auth::text || ',anon=' || r.anon::text || ')';
+
+    elsif r.quien = 'cerrada' and (r.auth or r.anon) then
+      v_fallos := v_fallos + 1;
+      v_detalle := v_detalle || ' | ABIERTA de mas: ' || r.nombre ||
+                   '(auth=' || r.auth::text || ',anon=' || r.anon::text || ')';
+
+    elsif r.quien = 'auth' and ((not r.auth) or r.anon) then
+      v_fallos := v_fallos + 1;
+      v_detalle := v_detalle || ' | ' || r.nombre || ' deberia ser solo authenticated' ||
+                   ' (auth=' || r.auth::text || ',anon=' || r.anon::text || ')';
+
+    elsif r.quien = 'anon' and ((not r.auth) or (not r.anon)) then
+      v_fallos := v_fallos + 1;
+      v_detalle := v_detalle || ' | ' || r.nombre || ' deberia ser publica' ||
+                   ' (auth=' || r.auth::text || ',anon=' || r.anon::text || ')';
+    end if;
+  end loop;
+
+  perform _p.anotar(47, 'Censo de funciones: ninguna abierta sin declarar',
+    'las 34 funciones de public coinciden con lo declarado, y no hay ninguna sin declarar',
+    v_fallos = 0 and v_sin_declarar = 0 and v_total > 0,
+    'funciones en public: ' || v_total::text ||
+    ' | desajustes: ' || v_fallos::text ||
+    ' | sin declarar: ' || v_sin_declarar::text || v_detalle);
+exception when others then
+  perform _p.anotar(47, 'Censo de funciones: ninguna abierta sin declarar',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P48 - CENSO DE TABLAS: quien puede escribir que, y TRUNCATE en cero
+--
+--  El hallazgo del 29/09: las quince tablas de `public` nacieron con GRANT ALL
+--  para `anon` y `authenticated`, por el ALTER DEFAULT PRIVILEGES de la imagen
+--  de Supabase. Ninguna migracion lo escribio; se aplico solo.
+--
+--  Y el privilegio que mas importa de esa lista es el que menos se mira:
+--  TRUNCATE. Doc 17, 5.9: "Operations that apply to the whole table, such as
+--  TRUNCATE and REFERENCES, are not subject to row security." Vaciar una tabla
+--  no pasa por ninguna politica. La RLS no defiende de eso, y no puede.
+--
+--  Por eso el censo no pregunta "hay alguna politica que lo tape": pregunta
+--  por el PRIVILEGIO, uno a uno, para los siete verbos.
+--
+--  Lo declarado abajo es el estado correcto. Las dos excepciones vivas llevan
+--  su razon y su fecha de caducidad escritas al lado.
+-- ============================================================================
+do $$
+declare
+  r record; v_priv text;
+  v_total int := 0; v_fallos int := 0; v_sin_declarar int := 0;
+  v_detalle text := '';
+  v_real boolean; v_esperado boolean;
+begin
+  for r in
+    with esperado(tabla, auth_privs, anon_privs) as (values
+      -- dinero y rastro: nadie escribe a mano, todo pasa por funciones definer
+      ('wallets',            'select',                        ''),
+      ('wallet_movements',   'select',                        ''),
+      ('bids',               'select',                        ''),
+      ('race_results',       'select',                        ''),
+      ('profiles',           'select',                        ''),
+      ('withdraw_requests',  'select',                        ''),
+      ('deposit_requests',   'select',                        ''),
+      ('admin_actions',      'select',                        ''),
+      ('house_ledger',       'select',                        ''),
+      -- catalogo del remate: lo escribe la pantalla de admin HASTA LA TANDA 4,
+      -- cuando existan crear_remate_completo() y guardar_remate_completo().
+      -- Ese dia estas cuatro bajan a 'select' y se quitan del panel a la vez.
+      ('horses',             'select,insert,update,delete',   'select'),
+      ('races',              'select,insert,update,delete',   'select'),
+      ('remate_price_rules', 'select,insert,update,delete',   'select'),
+      ('support_settings',   'select,insert,update,delete',   'select'),
+      -- remates: update y delete ya cayeron en la 3.2. El insert sigue vivo
+      -- porque lo usa la pantalla de crear remate; cae en la tanda 4.
+      ('remates',            'select,insert',                 'select'),
+      -- avisos al jugador: los escribe editar_remate, los lee todo el mundo
+      ('remate_avisos',      'select',                        'select')
+    )
+    select c.relname as tabla, c.oid, e.auth_privs, e.anon_privs
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    left join esperado e on e.tabla = c.relname
+    where n.nspname = 'public' and c.relkind = 'r'
+    order by c.relname
+  loop
+    v_total := v_total + 1;
+
+    if r.auth_privs is null then
+      v_sin_declarar := v_sin_declarar + 1;
+      v_detalle := v_detalle || ' | TABLA SIN DECLARAR: ' || r.tabla;
+      continue;
+    end if;
+
+    foreach v_priv in array array['select','insert','update','delete','truncate','references','trigger']
+    loop
+      -- authenticated
+      v_real     := has_table_privilege('authenticated', r.oid, v_priv);
+      v_esperado := (',' || r.auth_privs || ',') like ('%,' || v_priv || ',%');
+      if v_real <> v_esperado then
+        v_fallos := v_fallos + 1;
+        v_detalle := v_detalle || ' | ' || r.tabla || '.' || v_priv ||
+                     ' authenticated=' || v_real::text || ' (esperado ' || v_esperado::text || ')';
+      end if;
+
+      -- anon
+      v_real     := has_table_privilege('anon', r.oid, v_priv);
+      v_esperado := (',' || r.anon_privs || ',') like ('%,' || v_priv || ',%');
+      if v_real <> v_esperado then
+        v_fallos := v_fallos + 1;
+        v_detalle := v_detalle || ' | ' || r.tabla || '.' || v_priv ||
+                     ' anon=' || v_real::text || ' (esperado ' || v_esperado::text || ')';
+      end if;
+    end loop;
+  end loop;
+
+  perform _p.anotar(48, 'Censo de tablas: privilegios declarados y TRUNCATE en cero',
+    'las 15 tablas de public coinciden con lo declarado en los 7 verbos, para anon y authenticated',
+    v_fallos = 0 and v_sin_declarar = 0 and v_total > 0,
+    'tablas en public: ' || v_total::text ||
+    ' | desajustes: ' || v_fallos::text ||
+    ' | sin declarar: ' || v_sin_declarar::text ||
+    case when v_detalle = '' then ' | todo en su sitio' else left(v_detalle, 1400) end);
+exception when others then
+  perform _p.anotar(48, 'Censo de tablas: privilegios declarados y TRUNCATE en cero',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P49 - Un admin no puede tocar el saldo ni el libro a mano
+--
+--  P47 y P48 miran el ACL. Esta ejercita la consecuencia, que es lo que de
+--  verdad importa y lo que hay que poder contarle a un licenciatario:
+--
+--    un admin NO puede subirse el saldo desde la consola del navegador,
+--    y NO puede escribir ni borrar filas de wallet_movements.
+--
+--  Eso ultimo es lo grave del hallazgo original: wallet_movements es lo que
+--  lee el cuadre de P31. Un admin que pudiera escribir ahi falsearia los
+--  libros Y la auditoria que comprueba los libros con la misma sesion.
+--
+--  El arnes corre como `postgres`, que se salta ACL y RLS, asi que aqui no
+--  vale `actuar_como`: hay que preguntar por el privilegio. Lo que SI se
+--  ejercita de verdad es que la via legitima sigue viva -- una recarga
+--  aprobada por RPC mueve el saldo -- porque cerrar la puerta sin romper la
+--  escalera es la mitad del trabajo.
+-- ============================================================================
+do $$
+declare
+  v_upd_wallets boolean; v_ins_movs boolean; v_del_movs boolean; v_upd_movs boolean;
+  v_pol_wallets_all boolean; v_pol_movs_all boolean;
+  v_admin uuid; v_u uuid; v_dep uuid; v_saldo numeric; v_movs int;
+begin
+  perform _p.limpiar();
+
+  v_upd_wallets := has_table_privilege('authenticated', 'public.wallets', 'update');
+  v_ins_movs    := has_table_privilege('authenticated', 'public.wallet_movements', 'insert');
+  v_upd_movs    := has_table_privilege('authenticated', 'public.wallet_movements', 'update');
+  v_del_movs    := has_table_privilege('authenticated', 'public.wallet_movements', 'delete');
+
+  -- el segundo cerrojo: la politica FOR ALL tiene que haber dejado de existir
+  select exists (select 1 from pg_policies where schemaname='public'
+                   and tablename='wallets' and policyname='wallets_admin_all') into v_pol_wallets_all;
+  select exists (select 1 from pg_policies where schemaname='public'
+                   and tablename='wallet_movements' and policyname='wallet_movements_admin_all') into v_pol_movs_all;
+
+  -- y la via legitima, ejercitada de verdad
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 0);
+  perform _p.actuar_como(v_u);
+  perform public.solicitar_recarga(500, 'pago_movil', '04121234567', 'REF-P49', current_date);
+  select id into v_dep from public.deposit_requests where user_id = v_u;
+  perform _p.actuar_como(v_admin);
+  perform public.aprobar_recarga(v_dep);
+  v_saldo := _p.saldo(v_u);
+  select count(*) into v_movs from public.wallet_movements m
+  join public.wallets w on w.id = m.wallet_id where w.user_id = v_u;
+
+  perform _p.anotar(49, 'Un admin no toca el saldo ni el libro a mano',
+    'sin update sobre wallets ni escritura sobre wallet_movements; politicas FOR ALL retiradas; la recarga por RPC sigue moviendo el saldo',
+    (not v_upd_wallets) and (not v_ins_movs) and (not v_upd_movs) and (not v_del_movs)
+      and (not v_pol_wallets_all) and (not v_pol_movs_all)
+      and v_saldo = 500 and v_movs = 1,
+    'wallets.update=' || v_upd_wallets::text ||
+    ' movimientos[ins=' || v_ins_movs::text || ',upd=' || v_upd_movs::text ||
+    ',del=' || v_del_movs::text || ']' ||
+    ' politicas_for_all[wallets=' || v_pol_wallets_all::text || ',movimientos=' || v_pol_movs_all::text || ']' ||
+    ' | via legitima -> saldo ' || coalesce(v_saldo,-1)::text || ' (esperado 500)' ||
+    ', movimientos ' || v_movs::text || ' (esperado 1)');
+exception when others then
+  perform _p.anotar(49, 'Un admin no toca el saldo ni el libro a mano',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;
@@ -2051,3 +2894,28 @@ select count(*) filter (where estado='OK') as "en verde",
        count(*) filter (where estado='FALLA') as "en rojo",
        count(*) as total
 from _p.resultado;
+
+
+-- ---------------------------------------------------------------- limpieza
+--  EL ARNES DEJA LA BASE COMO LA ENCONTRO (anadido el 29/09)
+--
+--  Cada prueba llama a _p.limpiar() ANTES de armar su escenario, nunca
+--  despues. Consecuencia: la ultima prueba que corre deja su mundo montado en
+--  la base -- usuarios, saldos, recargas aprobadas.
+--
+--  Hasta hoy no importaba, porque nadie abria la aplicacion contra la base del
+--  arnes. Desde que existe .env.development.local si, y Jota se encontro a
+--  "juan" con 500 Bs de recarga aprobada en la pantalla de recargas: el
+--  residuo de P49.
+--
+--  En una app cuyo argumento de venta es que las cuentas cuadran, un usuario
+--  fantasma con dinero fantasma en la pantalla del admin es veneno. Se limpia.
+--
+--  _p.resultado NO se borra: el resumen ya se imprimio arriba, pero la tabla
+--  queda por si quieres consultarla. Si alguna vez necesitas inspeccionar el
+--  estado que dejo una prueba en rojo, comenta este bloque y vuelve a correr.
+do $$
+begin
+  delete from public.admin_actions;   -- _p.limpiar() no lo toca
+  perform _p.limpiar();
+end $$;
