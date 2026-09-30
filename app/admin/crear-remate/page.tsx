@@ -776,16 +776,43 @@ export default function AdminCrearRematePage() {
 
       const rulesPayload: any[] = []
 
+      // LA ESCALERA GENERAL NO EXISTE EN LA BASE (30/09/2026).
+      //
+      // Hasta hoy esto escribia filas con `horse_id: null`, una escalera
+      // "general" del remate. Y esa fila le ganaba a `remates.incremento_minimo`
+      // dentro de _incremento_aplicable(), asi que cambiar el incremento con
+      // editar_remate no surtia efecto en los caballos sin escalera propia: el
+      // admin cambiaba el numero, la pantalla se lo confirmaba, y la base
+      // cobraba otra cosa. Dos fuentes para el mismo valor, y mandaba la que no
+      // se ve. ADR-015.
+      //
+      // La escalera general SIGUE existiendo aqui, en el formulario, porque es
+      // un atajo comodo: configura doce caballos de un golpe. Lo que cambia es
+      // que al guardar se EXPANDE a una escalera identica por caballo, con su
+      // horse_id. En la base hay una sola clase de regla, y lo que el admin ve
+      // en la pantalla de edicion es exactamente lo que se va a aplicar.
+      //
+      // Se saltan los caballos que tienen la suya: la suya manda, y copiarles
+      // la general encima les cambiaria el comportamiento.
+      //
+      // `remate_price_rules.horse_id` es NOT NULL desde la migracion
+      // 20260930100000. Si alguien vuelve a mandar un nulo desde aqui, la base
+      // lo rechaza con 23502 en vez de aceptarlo en silencio.
       if (useDefaultRules) {
-        for (const r of defaultRules) {
-          if (!r.min_precio.trim() || !r.incremento.trim()) continue
-          rulesPayload.push({
-            remate_id: remateId,
-            horse_id: null,
-            min_precio: n(r.min_precio),
-            max_precio: r.max_precio.trim() ? n(r.max_precio) : null,
-            incremento: n(r.incremento),
-          })
+        for (const h of horses) {
+          if (horseRulesEnabled[h.tempId]) continue
+          const horseId = horseIdByTemp[h.tempId]
+          if (!horseId) continue
+          for (const r of defaultRules) {
+            if (!r.min_precio.trim() || !r.incremento.trim()) continue
+            rulesPayload.push({
+              remate_id: remateId,
+              horse_id: horseId,
+              min_precio: n(r.min_precio),
+              max_precio: r.max_precio.trim() ? n(r.max_precio) : null,
+              incremento: n(r.incremento),
+            })
+          }
         }
       }
 

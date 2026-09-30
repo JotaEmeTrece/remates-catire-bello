@@ -698,11 +698,21 @@ end $$;
 
 
 -- ============================================================================
---  P13 - La regla individual del caballo le gana a la general del remate
+--  P13 - La escalera del caballo le gana al incremento del remate
 --
---  hacer_puja ordenaba por `(r.horse_id = p_horse_id) desc`. Para la regla
---  general horse_id es NULL, `NULL = <uuid>` da NULL, y un ORDER BY DESC pone
---  los NULL primero: la general le ganaba a la individual, siempre.
+--  REESCRITA EL 30/09. La version original probaba la precedencia entre la
+--  regla GENERAL (horse_id nulo) y la del caballo: hacer_puja ordenaba por
+--  `(r.horse_id = p_horse_id) desc`, y como `NULL = <uuid>` da NULL y un
+--  ORDER BY DESC pone los NULL primero, la general ganaba siempre.
+--
+--  Esa precedencia ya no existe: la migracion 20260930100000 elimino la regla
+--  general de la base entera -- `horse_id` es NOT NULL -- porque era una
+--  segunda fuente invisible del mismo numero y le ganaba a
+--  `remates.incremento_minimo` sin que nadie lo viera.
+--
+--  La prueba no se parchea, se reescribe: mide la precedencia que SI queda en
+--  pie, que es la del caballo sobre el incremento del remate. Mismos importes
+--  esperados, misma logica de dos sentidos.
 --
 --  OJO CON EL ESCENARIO: desde la tarea 2.17 la PRIMERA puja compra al precio
 --  de salida exacto, sin sumar ningun incremento. O sea que en la primera puja
@@ -716,48 +726,44 @@ do $$
 declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid; v_h uuid;
         v_caso_a numeric; v_caso_b numeric;
 begin
-  -- caso A: general 20, individual 100 -> la segunda puja debe ser 100 + 100 = 200
+  -- caso A: remate 20, caballo 100 -> la segunda puja debe ser 100 + 100 = 200
   perform _p.limpiar();
   v_admin := _p.usuario('admin', 0, true);
   v_u1    := _p.usuario('juan',  1000000);
   v_u2    := _p.usuario('pedro', 1000000);
   v_rem   := _p.escenario(2, 100);
-  update public.remates set incremento_minimo = 5 where id = v_rem;
+  update public.remates set incremento_minimo = 20 where id = v_rem;   -- el del remate
   v_h := _p.caballo(v_rem, 1);
   insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
-    values (v_rem, null, 0, null, 20);
-  insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
-    values (v_rem, v_h, 0, null, 100);
+    values (v_rem, v_h, 0, null, 100);                                 -- el del caballo
   perform _p.actuar_como(v_u1);
   perform public.hacer_puja(v_rem, v_h, null, false);   -- primera: compra en 100
   perform _p.actuar_como(v_u2);
   perform public.hacer_puja(v_rem, v_h, null, false);   -- segunda: aqui manda la regla
   select max(monto) into v_caso_a from public.bids where horse_id = v_h;
 
-  -- caso B: general 100, individual 20 -> la segunda puja debe ser 100 + 20 = 120
+  -- caso B: remate 100, caballo 20 -> la segunda puja debe ser 100 + 20 = 120
   perform _p.limpiar();
   v_admin := _p.usuario('admin', 0, true);
   v_u1    := _p.usuario('juan',  1000000);
   v_u2    := _p.usuario('pedro', 1000000);
   v_rem   := _p.escenario(2, 100);
-  update public.remates set incremento_minimo = 5 where id = v_rem;
+  update public.remates set incremento_minimo = 100 where id = v_rem;  -- el del remate
   v_h := _p.caballo(v_rem, 1);
   insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
-    values (v_rem, null, 0, null, 100);
-  insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
-    values (v_rem, v_h, 0, null, 20);
+    values (v_rem, v_h, 0, null, 20);                                  -- el del caballo
   perform _p.actuar_como(v_u1);
   perform public.hacer_puja(v_rem, v_h, null, false);
   perform _p.actuar_como(v_u2);
   perform public.hacer_puja(v_rem, v_h, null, false);
   select max(monto) into v_caso_b from public.bids where horse_id = v_h;
 
-  perform _p.anotar(13, 'La regla del caballo le gana a la del remate',
-    'segunda puja: A = 200 (aumento individual 100) y B = 120 (aumento individual 20)',
+  perform _p.anotar(13, 'La escalera del caballo le gana al incremento del remate',
+    'segunda puja: A = 200 (escalera del caballo 100) y B = 120 (escalera del caballo 20)',
     v_caso_a = 200 and v_caso_b = 120,
     'A: cobro ' || v_caso_a::text || ' (esperado 200) | B: cobro ' || v_caso_b::text || ' (esperado 120)');
 exception when others then
-  perform _p.anotar(13, 'La regla del caballo le gana a la del remate',
+  perform _p.anotar(13, 'La escalera del caballo le gana al incremento del remate',
     'A = 200 y B = 120', false, 'excepcion: ' || sqlerrm);
 end $$;
 
@@ -1359,8 +1365,9 @@ end $$;
 --  la general. El usuario leia un numero y la base cobraba otro.
 --
 --  Ahora las dos salen de _incremento_aplicable(). Esta prueba lo verifica caso
---  por caballo, en un escenario con regla general, regla individual, caballos
---  virgenes y caballos ya pujados.
+--  por caballo, en un escenario con dos escaleras propias distintas, un caballo
+--  sin escalera que cae al incremento del remate, caballos ya pujados y uno
+--  virgen.
 -- ============================================================================
 do $$
 declare v_admin uuid; v_u1 uuid; v_u2 uuid; v_rem uuid;
@@ -1376,9 +1383,12 @@ begin
   update public.remates set incremento_minimo = 7 where id = v_rem;   -- fallback raro a proposito
   v_h1 := _p.caballo(v_rem,1); v_h2 := _p.caballo(v_rem,2); v_h3 := _p.caballo(v_rem,3);
 
-  -- regla general del remate y una individual para el caballo 2
+  -- Escalera propia para el 1 y para el 2, con incrementos distintos; el 3 se
+  -- queda sin ninguna y tiene que caer al incremento_minimo del remate (7).
+  -- Antes del 30/09 esto se montaba con una regla general para todos; esa
+  -- clase de fila ya no existe (migracion 20260930100000).
   insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
-    values (v_rem, null, 0, null, 25);
+    values (v_rem, v_h1, 0, null, 25);
   insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
     values (v_rem, v_h2, 0, null, 150);
 
@@ -2883,6 +2893,129 @@ begin
     ', movimientos ' || v_movs::text || ' (esperado 1)');
 exception when others then
   perform _p.anotar(49, 'Un admin no toca el saldo ni el libro a mano',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+
+-- ============================================================================
+--  P50 - La escalera general no existe, y cambiar el incremento surte efecto
+--
+--  EL DEFECTO QUE REPRODUCE (30/09)
+--
+--  `remate_price_rules` admitia filas con `horse_id` nulo -- una escalera
+--  "general" del remate -- y esas filas GANABAN sobre
+--  `remates.incremento_minimo`. Jota cambio el incremento de un remate de 50
+--  a 80, la columna quedo en 80, y el caballo sin escalera propia siguio
+--  subiendo de 50 en 50 porque el tramo general lo decia.
+--
+--  El admin cambia un numero, la pantalla le confirma el cambio, y la base
+--  cobra otra cosa. Dos fuentes para el mismo numero, y manda la que no se ve.
+--
+--  LA PRUEBA MIDE TRES COSAS, Y LAS TRES IMPORTAN:
+--
+--    1. Una regla general ya no se puede escribir  -> 23502 (not_null_violation)
+--    2. Un caballo SIN escalera propia obedece a remates.incremento_minimo,
+--       y lo sigue obedeciendo despues de cambiarlo con editar_remate
+--    3. Un caballo CON escalera propia conserva la suya
+--
+--  La tercera es la que evita el arreglo bruto: cerrar la general a costa de
+--  romper las escaleras por caballo seria cambiar un defecto por otro.
+--
+--  23502 = not_null_violation
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
+  v_general_entro boolean := false; v_sqlstate text := '';
+  v_inc1_antes numeric; v_inc2_antes numeric;
+  v_inc1_despues numeric; v_inc2_despues numeric;
+  v_existe boolean;
+begin
+  perform _p.limpiar();
+
+  select exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'editar_remate'
+  ) into v_existe;
+
+  if not v_existe then
+    perform _p.anotar(50, 'La escalera general no existe y el incremento del remate manda',
+      'ver arriba', false, 'editar_remate NO EXISTE: la migracion no esta aplicada');
+    return;
+  end if;
+
+  v_admin := _p.usuario('admin', 0, true);
+  v_rem   := _p.escenario(2, 100, 25);          -- incremento_minimo = 10
+  v_h1    := _p.caballo(v_rem, 1);              -- SIN escalera propia
+  v_h2    := _p.caballo(v_rem, 2);              -- CON escalera propia
+
+  insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
+  values (v_rem, v_h2, 100, 1000, 30);
+
+  -- 1) la regla general tiene que rebotar
+  begin
+    insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
+    values (v_rem, null, 0, null, 50);
+    v_general_entro := true;
+  exception when others then
+    v_sqlstate := sqlstate;
+  end;
+
+  select incremento into v_inc1_antes from public.remate_minimos(v_rem) where numero = 1;
+  select incremento into v_inc2_antes from public.remate_minimos(v_rem) where numero = 2;
+
+  -- 2) y cambiar el incremento del remate tiene que llegar al caballo 1
+  perform _p.actuar_como(v_admin);
+  perform public.editar_remate(v_rem, null, 80, null, null, null);
+
+  select incremento into v_inc1_despues from public.remate_minimos(v_rem) where numero = 1;
+  select incremento into v_inc2_despues from public.remate_minimos(v_rem) where numero = 2;
+
+  perform _p.anotar(50, 'La escalera general no existe y el incremento del remate manda',
+    'la regla general se rechaza con 23502; el caballo sin escalera pasa de 10 a 80; el que tiene escalera sigue en 30',
+    (not v_general_entro) and v_sqlstate = '23502'
+      and v_inc1_antes = 10 and v_inc1_despues = 80
+      and v_inc2_antes = 30 and v_inc2_despues = 30,
+    'regla general entro=' || v_general_entro::text ||
+    case when v_sqlstate = '' then '' else ' (sqlstate ' || v_sqlstate || ')' end ||
+    ' | caballo 1 (sin escalera): ' || coalesce(v_inc1_antes,-1)::text ||
+    ' -> ' || coalesce(v_inc1_despues,-1)::text || ' (esperado 10 -> 80; si da 50 gano la general)' ||
+    ' | caballo 2 (con escalera): ' || coalesce(v_inc2_antes,-1)::text ||
+    ' -> ' || coalesce(v_inc2_despues,-1)::text || ' (esperado 30 en los dos)');
+exception when others then
+  perform _p.anotar(50, 'La escalera general no existe y el incremento del remate manda',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P51 - La columna que hace imposible la regla invisible
+--
+--  P50 comprueba el comportamiento; esta comprueba la valla. Son cosas
+--  distintas: el comportamiento correcto se puede conseguir por casualidad
+--  -- no habiendo generales en la base -- y seguir siendo posible escribirlas.
+--
+--  Mientras `horse_id` admita nulos, el defecto de P50 se puede reintroducir
+--  con un insert de mantenimiento, una migracion futura o un service_role
+--  distraido, y no lo veria nadie hasta que un remate cobrara de menos.
+-- ============================================================================
+do $$
+declare v_not_null boolean;
+begin
+  select a.attnotnull into v_not_null
+  from pg_attribute a
+  where a.attrelid = 'public.remate_price_rules'::regclass
+    and a.attname = 'horse_id'
+    and a.attnum > 0;
+
+  perform _p.anotar(51, 'remate_price_rules.horse_id es obligatorio',
+    'la columna es NOT NULL: una regla siempre es de un caballo concreto',
+    coalesce(v_not_null, false),
+    'horse_id not null = ' || coalesce(v_not_null, false)::text ||
+    ' -> mientras admita nulos, la escalera general se puede reintroducir sin que nadie lo vea');
+exception when others then
+  perform _p.anotar(51, 'remate_price_rules.horse_id es obligatorio',
     'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
 end $$;
 

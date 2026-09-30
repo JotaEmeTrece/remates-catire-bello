@@ -718,15 +718,29 @@ export default function AdminRemateDetailPage() {
 
       const rulesPayload: any[] = []
 
+      // La escalera general se expande por caballo. Ver el comentario largo en
+      // app/admin/crear-remate/page.tsx y la migracion 20260930100000: en la
+      // base no existe la regla general, `horse_id` es NOT NULL.
+      //
+      // Los caballos borrados en esta misma edicion ya salieron de `horses`
+      // (removeHorse) y se fueron en `deletedHorseIds` arriba, asi que no
+      // reciben reglas. Los que se acaban de crear ya tienen su id en
+      // newIdByTemp.
       if (useDefaultRules && defaultRules.length > 0) {
-        for (const r of defaultRules) {
-          rulesPayload.push({
-            remate_id: remate.id,
-            horse_id: null,
-            min_precio: n(r.min_precio),
-            max_precio: r.max_precio.trim() ? n(r.max_precio) : null,
-            incremento: n(r.incremento),
-          })
+        for (const h of horses) {
+          if (horseRulesEnabled[h.tempId]) continue
+          const horseId = h.id || newIdByTemp[h.tempId]
+          if (!horseId) continue
+          for (const r of defaultRules) {
+            if (!r.min_precio.trim() || !r.incremento.trim()) continue
+            rulesPayload.push({
+              remate_id: remate.id,
+              horse_id: horseId,
+              min_precio: n(r.min_precio),
+              max_precio: r.max_precio.trim() ? n(r.max_precio) : null,
+              incremento: n(r.incremento),
+            })
+          }
         }
       }
 
@@ -1558,19 +1572,27 @@ export default function AdminRemateDetailPage() {
 
         <section className="mt-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold">4) Reglas default</h2>
+            <h2 className="text-base font-semibold">4) Escalera para los caballos sin reglas propias</h2>
             <label className="text-xs text-zinc-300 flex items-center gap-2">
               <input
                 type="checkbox"
                 checked={useDefaultRules}
                 onChange={(e) => setUseDefaultRules(e.target.checked)}
               />
-              Usar reglas default
+              Activar
             </label>
           </div>
 
+          <p className="mt-2 text-xs text-zinc-400">
+            Al guardar, esta escalera se copia <strong>a cada caballo que no tenga la suya</strong>. En la
+            base no existe una regla &quot;general&quot;: cada regla pertenece a un caballo concreto, y es
+            la que vas a ver arriba en su ficha.
+          </p>
+
           {!useDefaultRules ? (
-            <div className="mt-2 text-xs text-zinc-400">Sin reglas default. Cada caballo debe tener reglas propias.</div>
+            <div className="mt-2 text-xs text-zinc-400">
+              Apagada. Los caballos sin escalera propia suben segun el <strong>incremento del remate</strong>.
+            </div>
           ) : (
             <>
               <div className="mt-3 grid grid-cols-4 gap-2 text-xs text-zinc-500">
