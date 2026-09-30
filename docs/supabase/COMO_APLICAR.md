@@ -6,8 +6,8 @@ corrieron, en una tabla del propio proyecto: `supabase_migrations.schema_migrati
 
 | Comando | Dónde | Qué hace |
 |---|---|---|
-| `npx supabase db reset` | **local** | Borra la base local y aplica **todas** las migraciones desde cero, en orden |
-| `npx supabase db push` | **producción** | Compara la carpeta contra la tabla de control y aplica **solo las que faltan** |
+| `pnpm db:reset` | **local** | Borra la base local y aplica **todas** las migraciones desde cero, en orden |
+| `pnpm db:push:produccion` | **producción** | Compara la carpeta contra la tabla de control y aplica **solo las que faltan** |
 
 ---
 
@@ -40,19 +40,36 @@ corrieron, en una tabla del propio proyecto: `supabase_migrations.schema_migrati
 
 ---
 
-## Correr el arnés de pruebas
+## Correr las pruebas
 
-Desde la raíz del repo, en PowerShell, con Docker levantado:
+Son **dos archivos**, y el orden importa. Desde la raíz del repo, en PowerShell, con Docker levantado:
 
 ```powershell
-npx supabase db reset
+pnpm db:reset
 $db = docker ps --filter "name=supabase_db" --format "{{.Names}}"
 Get-Content tests/pruebas_dinero.sql | docker exec -i $db psql -U postgres -d postgres
+Get-Content tests/concurrencia.sql  | docker exec -i $db psql -U postgres -d postgres
 ```
 
-La segunda línea averigua cómo se llama el contenedor de la base que levantó Supabase — el nombre lleva un hash y cambia por proyecto, por eso no se puede escribir a mano. La tercera le mete el archivo de pruebas por la entrada estándar.
+La segunda línea averigua cómo se llama el contenedor de la base que levantó Supabase — el nombre lleva un hash y cambia por proyecto, por eso no se puede escribir a mano. Las dos siguientes le meten cada archivo de pruebas por la entrada estándar.
 
-Si `$db` sale vacío, el contenedor no está arriba: `npx supabase start` primero.
+Si `$db` sale vacío, el contenedor no está arriba: `pnpm db:start` primero.
+
+### `tests/pruebas_dinero.sql` — el arnés
+
+52 pruebas de reglas de dinero, permisos y contabilidad. Corre con **una sola conexión**. Al terminar imprime la tabla de resultados y **limpia los datos que creó**, para que la base quede vacía si después vas a abrir la aplicación contra ella.
+
+### `tests/concurrencia.sql` — las carreras
+
+4 pruebas de condiciones de carrera: el `for share` de `hacer_puja`, el candado de caja de `liquidar_remate` y el `unique` de `race_results`. Abre una **segunda conexión** con `dblink` para que dos sesiones se crucen de verdad.
+
+> **Necesita que el arnés haya corrido antes, sobre esta misma base.**
+>
+> Reutiliza su andamiaje — `_p.usuario`, `_p.escenario`, `_p.caballo`, `_p.actuar_como` — en vez de duplicarlo, que sería crear una segunda implementación del mismo escenario. El arnés deja esas funciones en la base al terminar; solo limpia los datos.
+>
+> Si lo corres solo, la prueba 0 sale en rojo diciendo que falta `_p.escenario`, y las otras tres se saltan en vez de reventar con un error opaco.
+
+La prueba 0 comprueba además que la **segunda conexión** se pudo abrir, y en el detalle dice con qué cadena. Si ahí sale `NINGUNA CADENA FUNCIONÓ`, el detalle lleva el error exacto de cada intento. Por qué no sirve `127.0.0.1` y sí el nombre de red del contenedor está explicado en el ADR-019 y dentro del propio archivo; para diagnosticar hay `supabase/snippets/diagnostico_dblink.sql`.
 
 > **`supabase start` y `supabase db start` no son lo mismo.**
 >
@@ -181,14 +198,17 @@ npx supabase init
 # 3. Levantar la pila local. LA PRIMERA VEZ TARDA VARIOS MINUTOS:
 #    descarga las imagenes Docker de Postgres, GoTrue, PostgREST, Studio...
 #    Al terminar imprime las URLs y las claves locales.
-npx supabase start
+pnpm db:start
 
-# 4. Probar TODO en local: borra y reaplica las tres migraciones
-npx supabase db reset
+# 4. Probar TODO en local: borra y reaplica TODAS las migraciones
+pnpm db:reset
 
-# 5. Correr el arnés contra la base local (ver "Correr el arnés" arriba)
+# 5. Correr las pruebas contra la base local (ver "Correr las pruebas" arriba).
+#    Los dos archivos, y en este orden: concurrencia.sql reutiliza el
+#    andamiaje que deja el arnes.
 $db = docker ps --filter "name=supabase_db" --format "{{.Names}}"
 Get-Content tests/pruebas_dinero.sql | docker exec -i $db psql -U postgres -d postgres
+Get-Content tests/concurrencia.sql  | docker exec -i $db psql -U postgres -d postgres
 
 # ---- hasta aqui TODO es local y no toca nada de produccion ----
 
@@ -199,7 +219,7 @@ npx supabase migration repair --status applied 00000000000000
 npx supabase migration repair --status applied 00000000000001
 
 # 8. Aplicar lo que de verdad falta (hoy: solo el fix del enum)
-npx supabase db push
+pnpm db:push:produccion
 ```
 
 De aquí en adelante el ciclo es siempre el mismo: escribir la migración,

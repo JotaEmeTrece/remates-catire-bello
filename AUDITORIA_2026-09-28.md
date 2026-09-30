@@ -348,8 +348,8 @@ Queda como recordatorio de la regla que más veces se ha roto en este proyecto: 
 
 | | qué |
 |---|---|
-| **Escalera general** | `crear-remate` sigue escribiendo reglas con `horse_id: null`, que ganan sobre `remates.incremento_minimo`. Cambiar el incremento en `editar_remate` no surte efecto en los caballos sin reglas propias. Contradice la decisión del 24/09. |
-| **`hacer_puja` sin guarda de admin** | La regla "los admins no pueden pujar" vive solo en el frontend (`app/remates/[id]/page.tsx:188`). Un admin puede pujar por RPC, en su propio remate, viendo todas las pujas. ADR-015. |
+| ~~**Escalera general**~~ | **RESUELTO el 30/09** — `20260930100000_escalera_solo_por_caballo.sql`. `horse_id` pasa a NOT NULL; la escalera general del formulario se expande a una escalera por caballo al guardar. P50 y P51. P13 y P28 reescritas: medían la precedencia entre la general y la del caballo, que era el defecto. |
+| ~~**`hacer_puja` sin guarda de admin**~~ | **RESUELTO el 30/09** — `20260930110000_admin_no_puja.sql`. La base rechaza con P0001 y no escribe nada; el frontend conserva su comprobación para no mostrar un formulario inútil. P52. |
 | **`remate_minimos.soy_lider`** | Devuelve NULL en vez de `false` cuando quien consulta no tiene sesión. Falta un `coalesce(..., false)`. |
 | **Mensaje de saldo insuficiente** | La aritmética es correcta; la redacción no dice el número que importa (lo que queda libre) y "otras pujas" es ambiguo. Además el texto lo escribe la base: según ADR-015 debería devolver números y que el frontend arme la frase. |
 | **Realtime** | Recargas en el panel, pujas y últimas pujas exigen recargar la página. Tarea 2.25. |
@@ -357,4 +357,4 @@ Queda como recordatorio de la regla que más veces se ha roto en este proyecto: 
 | **Formulario de recarga** | Pide teléfono aunque el método sea transferencia. Propuesta: campos por método, y nunca la cuenta completa — titular más los últimos cuatro dígitos bastan para cuadrar. |
 | **Marca y ajustes de instalación** | `layout.tsx` traía el título de `create-next-app`, corregido el 29/09. El footer sigue con la marca fija. Modelo acordado: cada licenciatario como su propio sitio dentro de la plataforma. |
 | **Interfaz** | Navbar superior, nombre de usuario visible en todas las secciones, escalera con los tres ritmos en la pantalla de edición, ver incremento y pozo por caballo desde ahí. |
-| **Concurrencia** | A2, A4 y la carrera de `set_ganador_carrera` no se reproducen con una sola conexión. Falta `tests/concurrencia.sql`. |
+| ~~**Concurrencia**~~ | **RESUELTO el 30/09** — `tests/concurrencia.sql`, 4/4. C1 demuestra el `for share` de A2 (B espera durante el cierre y su puja rebota con P0001 sin escribir), C2 el candado de caja de A4, C3 el `unique` de D1 con dos sesiones reales. Método y hallazgos en ADR-019. |

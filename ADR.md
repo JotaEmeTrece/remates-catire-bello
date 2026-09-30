@@ -283,3 +283,52 @@ Cerrarlo desde la base resultó imposible para las funciones. PostgreSQL concede
 - Al crear un remate se muestra siempre una confirmación con los tres números que mandan sobre el dinero —porcentaje, precio de salida, incremento— antes de guardar.
 
 **Qué la revertiría.** Un caso legítimo de corrección manual sobre un saldo. Existe: un error operativo que hay que deshacer. La respuesta no es reabrir la tabla, sino darle su propia RPC con motivo obligatorio y asiento en el libro, como `registrar_movimiento_casa`. Si algún día hace falta, se añade así.
+
+---
+
+## ADR-018 · Antes de cerrar una puerta, buscar quién la usa
+
+**Contexto.** El 30/09, la migración que puso `remate_price_rules.horse_id` en `NOT NULL` dejó dos pruebas en rojo —P13 y P28— porque montaban sus escenarios insertando reglas generales. La migración era correcta; lo que faltó fue un `grep remate_price_rules tests/` de dos segundos antes de escribirla.
+
+Fue la tercera vez el mismo día. Las otras dos: `alter default privileges ... in schema public revoke ... from public`, escrito sin leer la página del comando que lo declara inútil; y el `revoke select` sobre `deposit_requests` para `anon`, afirmado a partir de leer la baseline en vez de consultar la base real, donde el permiso sí estaba.
+
+**Decisión.** Antes de quitar un permiso, añadir una restricción o borrar una capacidad, se enumeran sus usos. No se deduce: se busca.
+
+- **En el repositorio:** `grep` del nombre del objeto en `app/`, `lib/`, `tests/` y `supabase/migrations/`, antes de escribir la migración.
+- **En la base:** el estado real se consulta, no se infiere del código que debería haberlo producido. Para eso existen `tests/diagnostico_acl.sql` y `supabase/snippets/diagnostico_remate.sql`.
+- **En la documentación:** si la migración usa un comando poco frecuente, se lee su página antes de escribirlo.
+
+**Por qué.** Las tres equivocaciones del 30/09 tienen la misma forma: **afirmar el estado de algo en vez de consultarlo.** Cuestan minutos cuando las caza el arnés y cuestan dinero cuando no. La de `ALTER DEFAULT PRIVILEGES` habría dejado el agujero A6 abierto creyéndolo cerrado, y solo la destapó una prueba escrita antes del arreglo.
+
+**Consecuencias.**
+- El orden de despliegue se decide mirando quién escribe qué. Cuando la migración cierra algo que el frontend todavía usa, **el frontend va primero** — al revés de lo habitual. Pasó con la escalera: `crear-remate` mandaba `horse_id: null` hasta que se desplegó el cambio.
+- Una prueba que se pone roja por una migración nueva no se parchea para que pase. Se mira qué medía: si medía el defecto que se acaba de eliminar, se reescribe para medir lo que queda en pie. P13 probaba la precedencia de la regla general sobre la del caballo, que era exactamente el agujero; reescrita, mide la precedencia de la escalera del caballo sobre el incremento del remate.
+
+**Qué la revertiría.** Nada previsible. Es una regla de método, no de arquitectura; su coste es de segundos y su fallo se paga en producción.
+
+---
+
+## ADR-019 · Una carrera se prueba con dos sesiones, o no se prueba
+
+**Contexto.** Tres de los nueve arreglos de la auditoría del 28/09 son condiciones de carrera: el `for share` de `hacer_puja` (A2), el candado de caja de `liquidar_remate` (A4) y el `unique` de `race_results` (D1). Los tres se desplegaron a producción el 29/09 con el arnés en verde. Pero el arnés corre con **una sola conexión**, y una carrera no se reproduce con una conexión: P45 comprobaba que un `insert` a mano rebota contra el `unique`, no que dos admins simultáneos no puedan insertar.
+
+Es una distinción que se pierde con facilidad porque el resultado se parece: la prueba de la valla y la prueba de la carrera salen las dos verdes. La diferencia aparece el día que la valla no estaba y nadie se enteró.
+
+**Decisión.** `tests/concurrencia.sql`. La sesión principal toma un candado dentro de una transacción abierta y no la cierra; una segunda conexión, abierta con `dblink` desde el mismo psql, lanza la operación real de forma asíncrona. `dblink_is_busy` dice si se quedó esperando. Las funciones son las de producción; lo único simulado es el momento.
+
+La contraprueba es lo que le da valor: sin el `unique`, la segunda sesión **no espera**, entra, y quedan dos filas para la misma carrera. Verificado antes de escribir el archivo.
+
+**Lo que costó hacerlo funcionar, y que vale para el paquete del licenciatario.**
+
+- En Supabase el rol `postgres` **no es superusuario** (`rolsuper = f`).
+- La documentación de dblink: *"Only superusers may use `dblink_connect` to create non-password-authenticated and non-GSSAPI-authenticated connections."*
+- El `pg_hba` del contenedor confía en las conexiones locales, así que por socket o por `127.0.0.1` la contraseña **no se usa** aunque se mande, y dblink lo rechaza con `2F003`. No es que la clave sea incorrecta: es que no se llegó a pedir.
+- `dblink_connect_u`, la variante para no-superusuarios, tiene el ACL `{supabase_admin=X/supabase_admin}`: `postgres` no puede ejecutarla ni concederse el permiso.
+- **Lo que funciona:** conectar al nombre de red del contenedor (`host=db`). Esa conexión sale por una dirección que no es loopback, ahí el `pg_hba` exige `scram`, la contraseña se usa, y la comprobación de seguridad pasa.
+
+**Consecuencias.**
+- El archivo depende del andamiaje `_p` del arnés en vez de duplicarlo. Una segunda implementación del mismo escenario es exactamente el defecto que persigue el ADR-015.
+- Después de un `dblink_send_query` hay que **drenar** con `dblink_get_result` hasta que devuelva cero filas. Sin drenar, la conexión queda con el comando a medias y la siguiente operación falla con *"another command is already in progress"* — y el síntoma aparece en una prueba distinta de la que lo causó, que es la peor forma de fallar. Cada escenario abre además su propia conexión, como segunda red.
+- Todo arreglo futuro que dependa de un candado lleva su prueba aquí, no en el arnés.
+
+**Qué la revertiría.** Que `pg_hba` cambie y la conexión por nombre de red deje de exigir contraseña. Entonces haría falta que un superusuario conceda `dblink_connect_u`, o pasar a dos procesos `psql` coordinados desde fuera de la base.
