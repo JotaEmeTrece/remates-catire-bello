@@ -2,6 +2,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { useSenal, TOPICO_CAJA, EVENTOS_CAJA } from "@/lib/realtime"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
@@ -207,6 +208,13 @@ export default function AdminRecargasPage() {
     void load(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
+
+  // EN VIVO. Una solicitud de recarga entra sola en la lista. Hasta hoy el
+  // admin solo se enteraba recargando la pagina, con el jugador esperando al
+  // otro lado y sin ningun aviso por correo. Canal privado: solo admins.
+  useSenal(TOPICO_CAJA, EVENTOS_CAJA, () => {
+    void load(true)
+  })
 
   // ---- filtered ----
   const filtered = useMemo(() => {

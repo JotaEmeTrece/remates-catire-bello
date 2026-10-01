@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
+import { useSenal, TOPICO_CAJA, EVENTOS_CAJA } from "@/lib/realtime"
 
 /**
  * Tipos base (segun tu schema real)
@@ -163,6 +164,12 @@ export default function AdminRetirosPage() {
     void load(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
+
+  // EN VIVO. Mismo canal que las recargas: los dos son movimientos de caja y
+  // los ve el mismo admin. Canal privado.
+  useSenal(TOPICO_CAJA, EVENTOS_CAJA, () => {
+    void load(true)
+  })
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase()

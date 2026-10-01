@@ -2654,6 +2654,14 @@ begin
       ('handle_new_user',                 'cerrada'),
       ('tr_check_admin_immutability',     'cerrada'),
       ('set_support_settings_updated_at', 'cerrada'),
+      -- emisor de senales de realtime y sus seis triggers (30/09)
+      ('_avisar',                         'cerrada'),
+      ('tr_avisar_puja',                  'cerrada'),
+      ('tr_avisar_remate',                'cerrada'),
+      ('tr_avisar_aviso',                 'cerrada'),
+      ('tr_avisar_caballo',               'cerrada'),
+      ('tr_avisar_recarga',               'cerrada'),
+      ('tr_avisar_retiro',                'cerrada'),
       -- sin uso en la aplicacion
       ('get_usernames',                   'cerrada'),
       ('promover_usuario',                'cerrada'),
@@ -2719,7 +2727,7 @@ begin
   end loop;
 
   perform _p.anotar(47, 'Censo de funciones: ninguna abierta sin declarar',
-    'las 34 funciones de public coinciden con lo declarado, y no hay ninguna sin declarar',
+    'todas las funciones de public coinciden con lo declarado, y no hay ninguna sin declarar',
     v_fallos = 0 and v_sin_declarar = 0 and v_total > 0,
     'funciones en public: ' || v_total::text ||
     ' | desajustes: ' || v_fallos::text ||
@@ -3088,6 +3096,93 @@ begin
     ' | pujas de juan: ' || v_pujas_juan::text || ' (esperado 1)');
 exception when others then
   perform _p.anotar(52, 'La casa no juega en su propio remate',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+
+-- ============================================================================
+--  P53 - Las senales de realtime salen, y salen al canal correcto
+--
+--  La aplicacion no tenia realtime: ni una tabla publicada, ni una
+--  suscripcion, ni un polling. Cada pantalla cargaba una vez y se quedaba
+--  quieta, con el jugador mirando un precio que podia ya no existir.
+--
+--  El diseno (migracion 20260930120000): el evento es una SENAL, no el dato.
+--  El trigger manda "algo cambio en el remate X" y el cliente vuelve a llamar
+--  a remate_minimos(). Si el evento trajera la puja, el frontend tendria que
+--  recalcular el minimo a partir de ella -- reimplementar
+--  _incremento_aplicable en TypeScript, que es el defecto que costo la tarea
+--  2.20. ADR-015.
+--
+--  ESTA PRUEBA MIDE LA MITAD DE LA BASE, que es la unica que se puede medir
+--  desde aqui: que los triggers existen, que las politicas estan puestas, y
+--  que al pujar aparece un mensaje en el canal del remate y NO en el de caja.
+--  Que el navegador lo reciba se comprueba clicando; no hay forma de hacerlo
+--  en SQL y no voy a fingir que si.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_juan uuid; v_rem uuid; v_h uuid;
+  v_triggers int; v_politicas int;
+  v_msg_remate int; v_msg_caja int;
+  v_payload jsonb;
+begin
+  perform _p.limpiar();
+
+  select count(*) into v_triggers
+  from pg_trigger t
+  where not t.tgisinternal
+    and t.tgname in ('avisar_puja','avisar_remate','avisar_aviso',
+                     'avisar_caballo','avisar_recarga','avisar_retiro');
+
+  select count(*) into v_politicas
+  from pg_policies
+  where schemaname = 'realtime' and tablename = 'messages'
+    and policyname in ('remate_recibe_cualquiera','caja_recibe_solo_admin');
+
+  if v_triggers < 6 or v_politicas < 2 then
+    perform _p.anotar(53, 'Las senales de realtime salen al canal correcto',
+      '6 triggers y 2 politicas sobre realtime.messages',
+      false,
+      'triggers: ' || v_triggers::text || ' de 6 | politicas: ' || v_politicas::text ||
+      ' de 2 -> la migracion 20260930120000 no esta aplicada');
+    return;
+  end if;
+
+  v_admin := _p.usuario('admin', 0, true);
+  v_juan  := _p.usuario('juan', 10000);
+  v_rem   := _p.escenario(2, 100, 25);
+  v_h     := _p.caballo(v_rem, 1);
+
+  delete from realtime.messages;
+
+  perform _p.actuar_como(v_juan);
+  perform public.hacer_puja(v_rem, v_h, null, false);
+
+  select count(*) into v_msg_remate
+  from realtime.messages
+  where topic = 'remate:' || v_rem::text and event = 'puja';
+
+  select count(*) into v_msg_caja
+  from realtime.messages where topic = 'admin:caja';
+
+  select payload into v_payload
+  from realtime.messages
+  where topic = 'remate:' || v_rem::text and event = 'puja'
+  limit 1;
+
+  perform _p.anotar(53, 'Las senales de realtime salen al canal correcto',
+    'una puja deja UN mensaje en remate:<id>, ninguno en admin:caja, y el payload es una senal (id) sin el monto',
+    v_msg_remate = 1 and v_msg_caja = 0
+      and v_payload ? 'remate_id'
+      and not (v_payload ? 'monto'),
+    'mensajes en el canal del remate: ' || v_msg_remate::text || ' (esperado 1)' ||
+    ' | en el canal de caja: ' || v_msg_caja::text || ' (esperado 0)' ||
+    ' | payload: ' || coalesce(v_payload::text, '(ninguno)') ||
+    ' -> si trae el monto, el evento dejo de ser una senal y el frontend va a calcular con el');
+exception when others then
+  perform _p.anotar(53, 'Las senales de realtime salen al canal correcto',
     'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
 end $$;
 

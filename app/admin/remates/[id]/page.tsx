@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
+import { useSenal, topicoRemate, EVENTOS_REMATE } from "@/lib/realtime"
 import { supabase } from "@/lib/supabaseClient"
 
 const CARACAS_TZ = "America/Caracas"
@@ -250,6 +251,8 @@ export default function AdminRemateDetailPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Hubo movimiento en el remate mientras esta pantalla estaba abierta.
+  const [hayCambios, setHayCambios] = useState(false)
   const [acting, setActing] = useState<null | { action: "cerrar" | "liquidar" | "cancelar" | "archivar" }>(null)
 
   const [error, setError] = useState("")
@@ -464,6 +467,18 @@ export default function AdminRemateDetailPage() {
     void loadAll(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remateId])
+
+  // EN VIVO, PERO SIN RECARGAR SOLO.
+  //
+  // Esta pantalla es un formulario: el admin puede estar a mitad de cambiar
+  // el incremento o la escalera de un caballo. Un loadAll() automatico le
+  // borraria el borrador sin avisar, y perder trabajo escrito es peor que
+  // ver un dato con diez segundos de retraso.
+  //
+  // Asi que la senal solo enciende un aviso, y el admin decide cuando.
+  useSenal(remateId ? topicoRemate(remateId) : null, EVENTOS_REMATE, () => {
+    setHayCambios(true)
+  })
 
   function validRules(list: PriceRuleDraft[]) {
     if (!list || list.length === 0) return false
@@ -1070,6 +1085,21 @@ export default function AdminRemateDetailPage() {
             {acting?.action === "archivar" ? "Archivando..." : "Archivar"}
           </button>
         </div>
+
+        {hayCambios ? (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/20">
+            <span>Hubo movimiento en este remate mientras lo tenias abierto.</span>
+            <button
+              onClick={() => {
+                setHayCambios(false)
+                void loadAll(true)
+              }}
+              className="shrink-0 rounded-lg bg-amber-400/20 px-3 py-1.5 font-medium text-amber-100 hover:bg-amber-400/30"
+            >
+              Actualizar
+            </button>
+          </div>
+        ) : null}
 
         {error ? (
           <div className="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-200 ring-1 ring-red-500/20">{error}</div>

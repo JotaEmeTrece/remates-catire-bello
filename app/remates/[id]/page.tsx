@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
+import { useSenal, topicoRemate, EVENTOS_REMATE } from "@/lib/realtime"
 import { supabase } from "@/lib/supabaseClient"
 import ClientBottomNav from "@/app/components/ClientBottomNav"
 import { CornerLogo } from "@/app/components/BrandLogo"
@@ -282,6 +283,13 @@ export default function RemateDetallePage() {
     if (!remateId) return
     void load(false)
   }, [remateId])
+
+  // EN VIVO. Cuando alguien puja, cambia un aviso, se retira un caballo o se
+  // cierra el remate, la base emite una senal y esta pantalla vuelve a
+  // preguntar. No pinta el dato que llega: lo pide. Ver lib/realtime.ts.
+  useSenal(remateId ? topicoRemate(remateId) : null, EVENTOS_REMATE, () => {
+    void load(true)
+  })
 
   const horsesById = useMemo(() => {
     const map: Record<string, HorseRow> = {}
