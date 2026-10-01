@@ -7,6 +7,19 @@ import type { Dispatch, SetStateAction } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
+// La escalera vive en lib/escalera.ts desde el 01/10: la pantalla de
+// MODIFICAR un remate necesita exactamente lo mismo, y copiarla habria sido
+// crear la segunda implementacion de una regla que ya existe (ADR-015).
+import {
+  type PriceRuleDraft,
+  type RitmoEscalera,
+  ETIQUETA_RITMO,
+  RITMOS,
+  generarEscalera,
+  simularPujas,
+  pujasHasta,
+  problemasEscalera,
+} from "@/lib/escalera"
 
 type HorseDraft = {
   tempId: string
@@ -15,13 +28,6 @@ type HorseDraft = {
   jinete: string
   comentarios: string
   precio_salida: string
-}
-
-type PriceRuleDraft = {
-  tempId: string
-  min_precio: string
-  max_precio: string
-  incremento: string
 }
 
 const CARACAS_TZ = "America/Caracas"
@@ -141,132 +147,6 @@ function formatoBs(v: number) {
   return Math.round(v).toLocaleString("es-VE")
 }
 
-// ===========================================================================
-//  LA ESCALERA DE INCREMENTOS
-//
-//  Antes esto eran 10 filas que el admin escribia a mano, arrancando en 0
-//  aunque ningun caballo saliera nunca por debajo del precio de salida: la
-//  mitad de los tramos no se usaban jamas.
-//
-//  Ahora la escalera se GENERA a partir del precio de salida. El admin elige
-//  el ritmo y ve la simulacion; solo baja a la tabla si quiere algo raro.
-//
-//  Los tramos son multiplos del precio de salida (1x, 5x, 10x, 50x, 100x) y
-//  el incremento de cada tramo es una fraccion del mismo precio de salida.
-//  Asi la escalera se recalcula sola si cambias la salida, y el incremento
-//  siempre queda entre el 5% y el 50% del precio en curso — que es el rango
-//  en que una subasta avanza sin eternizarse ni pegar saltos brutales.
-// ===========================================================================
-
-export type RitmoEscalera = "suave" | "normal" | "agresiva"
-
-// Los tramos, en multiplos del precio de salida. El ultimo no tiene techo.
-const TRAMOS_EN_MULTIPLOS: Array<{ desde: number; hasta: number | null }> = [
-  { desde: 1, hasta: 5 },
-  { desde: 5, hasta: 10 },
-  { desde: 10, hasta: 50 },
-  { desde: 50, hasta: 100 },
-  { desde: 100, hasta: null },
-]
-
-// El incremento de cada tramo, tambien en multiplos del precio de salida.
-const FACTORES_POR_RITMO: Record<RitmoEscalera, number[]> = {
-  suave: [0.25, 0.5, 1, 2.5, 5],
-  normal: [0.5, 1, 2.5, 5, 10],
-  agresiva: [1, 2, 5, 10, 20],
-}
-
-export const ETIQUETA_RITMO: Record<RitmoEscalera, string> = {
-  suave: "Suave - muchas pujas, sube despacio",
-  normal: "Normal - recomendado",
-  agresiva: "Agresiva - pocas pujas, sube rapido",
-}
-
-// Redondea a un numero "de los que uno diria en voz alta": 1, 2, 5, 10, 20,
-// 50, 100... Con salida 100 no hace falta, pero con salida 75 evita que el
-// incremento salga en 37,5.
-function aNumeroRedondo(v: number) {
-  if (!Number.isFinite(v) || v <= 0) return 1
-  const exp = Math.floor(Math.log10(v))
-  const base = Math.pow(10, exp)
-  // El 2,5 no sobra: sin el, 250 se redondeaba a 200. Y 250 es tan
-  // "numero que uno dice en voz alta" como 200.
-  const candidatos = [base, base * 2, base * 2.5, base * 5, base * 10]
-  let mejor = candidatos[0]
-  for (const c of candidatos) {
-    if (Math.abs(c - v) < Math.abs(mejor - v)) mejor = c
-  }
-  return mejor
-}
-
-export function generarEscalera(salida: number, ritmo: RitmoEscalera): PriceRuleDraft[] {
-  const s = salida > 0 ? salida : 100
-  const factores = FACTORES_POR_RITMO[ritmo]
-  return TRAMOS_EN_MULTIPLOS.map((t, i) => ({
-    tempId: uid(),
-    min_precio: String(Math.round(t.desde * s)),
-    max_precio: t.hasta === null ? "" : String(Math.round(t.hasta * s)),
-    incremento: String(aNumeroRedondo(factores[i] * s)),
-  }))
-}
-
-// Que incremento aplica a este precio. MISMA regla que _incremento_aplicable()
-// en la base: el tramo cuyo `desde` es el mayor que no pasa del precio.
-function incrementoPara(precio: number, reglas: PriceRuleDraft[], respaldo: number) {
-  let elegido: number | null = null
-  let mejorDesde = -1
-  for (const r of reglas) {
-    const desde = n(r.min_precio)
-    const hasta = r.max_precio.trim() ? n(r.max_precio) : null
-    if (precio >= desde && (hasta === null || precio < hasta)) {
-      if (desde > mejorDesde) {
-        mejorDesde = desde
-        elegido = n(r.incremento)
-      }
-    }
-  }
-  return elegido && elegido > 0 ? elegido : respaldo
-}
-
-// La simulacion que hace entendible la escalera: los primeros N precios.
-export function simularPujas(
-  salida: number,
-  reglas: PriceRuleDraft[],
-  respaldo: number,
-  cuantas = 10
-) {
-  const pasos: number[] = []
-  let p = salida > 0 ? salida : 0
-  if (p <= 0) return pasos
-  pasos.push(p)
-  for (let i = 0; i < cuantas; i++) {
-    const inc = incrementoPara(p, reglas, respaldo)
-    if (!(inc > 0)) break
-    p = p + inc
-    pasos.push(p)
-  }
-  return pasos
-}
-
-// Cuantas pujas hacen falta para llegar a `objetivo`. Devuelve null si con
-// esta escalera no se llega nunca (incremento cero o negativo).
-export function pujasHasta(
-  salida: number,
-  reglas: PriceRuleDraft[],
-  respaldo: number,
-  objetivo: number
-) {
-  let p = salida > 0 ? salida : 0
-  if (p <= 0 || objetivo <= p) return 0
-  let cuenta = 0
-  while (p < objetivo && cuenta < 5000) {
-    const inc = incrementoPara(p, reglas, respaldo)
-    if (!(inc > 0)) return null
-    p += inc
-    cuenta++
-  }
-  return cuenta >= 5000 ? null : cuenta
-}
 
 
 export default function AdminCrearRematePage() {
@@ -588,26 +468,12 @@ export default function AdminCrearRematePage() {
       }
     }
 
+    // La validacion de una escalera la hace lib/escalera.ts, igual que en la
+    // pantalla de editar. Estaba escrita dos veces y ya sabemos como acaba eso.
     for (const h of horses) {
       if (!horseRulesEnabled[h.tempId]) continue
       const quien = h.numero.trim() ? `Caballo ${h.numero.trim()}` : "Un caballo"
-      const list = horseRulesByTempId[h.tempId] || []
-      if (list.length === 0) {
-        f.push(`${quien}: reglas propias activadas pero sin ningún tramo`)
-        continue
-      }
-      for (const r of list) {
-        const min = n(r.min_precio)
-        const rinc = n(r.incremento)
-        const max = r.max_precio.trim() ? n(r.max_precio) : null
-        if (!(min >= 0)) f.push(`${quien}: un tramo sin "desde"`)
-        if (!(rinc > 0)) {
-          f.push(`${quien}: un tramo sin incremento`)
-        } else if (minIncremento !== null && rinc < minIncremento) {
-          f.push(`${quien}: un tramo sube ${formatoBs(rinc)} Bs y el mínimo es ${formatoBs(minIncremento)} Bs`)
-        }
-        if (max !== null && !(max > min)) f.push(`${quien}: un tramo con "hasta" menor que "desde"`)
-      }
+      f.push(...problemasEscalera(horseRulesByTempId[h.tempId] || [], minIncremento, quien))
     }
 
     // Sin duplicados: el mismo aviso repetido diez veces no informa mas.
@@ -1423,7 +1289,7 @@ export default function AdminCrearRematePage() {
                           Un favorito no sube igual que el resto: ese es el caso
                           que esta casilla existe para cubrir. */}
                       <div className="space-y-2">
-                        {(["suave", "normal", "agresiva"] as RitmoEscalera[]).map((op) => {
+                        {RITMOS.map((op) => {
                           const activo = (horseRitmo[h.tempId] ?? "normal") === op && !horseEscaleraTocada[h.tempId]
                           return (
                             <label
