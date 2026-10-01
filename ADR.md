@@ -332,3 +332,37 @@ La contraprueba es lo que le da valor: sin el `unique`, la segunda sesión **no 
 - Todo arreglo futuro que dependa de un candado lleva su prueba aquí, no en el arnés.
 
 **Qué la revertiría.** Que `pg_hba` cambie y la conexión por nombre de red deje de exigir contraseña. Entonces haría falta que un superusuario conceda `dblink_connect_u`, o pasar a dos procesos `psql` coordinados desde fuera de la base.
+
+---
+
+## ADR-020 · Una extensión en `public` se declara, porque cerrarla no está en nuestras manos
+
+**Contexto.** El censo de funciones (P47, ADR-016) se puso rojo con **41 funciones sin declarar**, todas `dblink*`, ejecutables por `anon` y `authenticated`. No las trae ninguna migración: las trae `create extension if not exists dblink` de `tests/concurrencia.sql`, y nacen abiertas por dos motivos a la vez — PostgreSQL le da `EXECUTE` a `PUBLIC` de fábrica (doc 17, §5.8) y la imagen de Supabase tiene `ALTER DEFAULT PRIVILEGES ... GRANT ALL ON FUNCTIONS TO anon, authenticated`.
+
+Con `dblink` deja de ser un detalle de permisos: `dblink` abre conexiones **de red desde el servidor de la base**.
+
+**El error que hubo que corregir por el camino.** La primera versión de este ADR decidía "quien abre, cierra": `concurrencia.sql` revocaría sobre las funciones de la extensión justo después de crearla. Se verificó en un Postgres 16.13 —41 → 0— y se dio por bueno. Contra la base real no hizo nada, y la base lo dijo con dos mensajes que no dejan lugar a dudas:
+
+```
+WARNING: no privileges could be revoked for "dblink"
+ERROR  42501: permission denied for function dblink_connect_u
+```
+
+El primero es lo que PostgreSQL emite cuando **quien revoca no es quien concedió**. El segundo, que `postgres` **no es el dueño**. En Supabase, `supautils` intercepta `CREATE EXTENSION` y la crea con un rol privilegiado, así que desde `postgres` la extensión no se puede revocar, ni mover de esquema, ni borrar. Se va con el próximo `db reset` y no antes.
+
+La causa del error no fue la decisión sino el entorno de prueba: en un Postgres pelado `postgres` es dueño de todo, y ahí cualquier cosa funciona. **Un entorno de prueba más permisivo que el real no prueba nada**; es la misma lección que ADR-019 ya había aprendido con `pg_hba`, aplicada mal al día siguiente.
+
+**Decisión.** Ninguna de las dos tentaciones.
+
+No cerrarla, porque no se puede — y una prueba que exige lo imposible termina comentada, que es la peor forma de perder una prueba. Y no esconderla moviéndola al esquema `extensions`: ahí dejaría de verla el censo, pero `anon` tiene `usage` sobre ese esquema, así que seguiría pudiendo ejecutarla. Eso sería teatro.
+
+Se **declara**, igual que las dos excepciones vivas de P48: con su razón y su alcance escritos al lado. `dblink` está en la lista `extensiones_toleradas` de P47 con cuatro hechos comprobables: que la instala `tests/concurrencia.sql`, que ninguna migración la crea —y por tanto producción no la tiene—, que la crea `supabase_admin` vía supautils, y que desaparece en el próximo `db reset`.
+
+Cualquier **otra** extensión que aparezca en `public` pone la prueba en rojo, esté abierta o cerrada: una extensión sin declarar en `public` ya es el hallazgo. Y el detalle de la prueba reporta el **dueño**, que es el dato que decide si se puede hacer algo al respecto.
+
+**Consecuencias.**
+- El censo sigue contando cuántas funciones de extensión están abiertas y lo dice en el detalle. Tolerada no es invisible.
+- `supabase/snippets/diagnostico_extensiones.sql` responde las tres preguntas —qué hay, de quién es, quién la ve— incluida la que faltó: *¿puedo hacer algo desde este rol?*
+- Lo que de verdad protege producción no es el censo sino que no exista ningún `create extension` en `supabase/migrations`. Verificado el 01/10 y comprobable en un comando: `grep -ri "create extension" supabase/migrations/`.
+
+**Qué lo revertiría.** Que `concurrencia.sql` deje de necesitar `dblink` —dos procesos `psql` coordinados desde fuera de la base harían el mismo trabajo sin instalar nada— o que Supabase permita al rol `postgres` gestionar las extensiones que él mismo pidió crear. Lo primero está en nuestra mano y es la salida limpia el día que moleste.

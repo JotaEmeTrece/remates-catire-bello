@@ -52,6 +52,32 @@ set client_min_messages to warning;
 
 create extension if not exists dblink;
 
+-- ---------------------------------------------------------------------------
+--  LO QUE NO SE PUEDE HACER AQUI, Y POR QUE SE DEJA ESCRITO (01/10)
+--
+--  `create extension` deja sus funciones con EXECUTE para PUBLIC (doc 17, 5.8)
+--  y, con los ALTER DEFAULT PRIVILEGES de la imagen de Supabase, ademas con un
+--  grant explicito a `anon` y `authenticated`. Con dblink eso no es un detalle
+--  de permisos: dblink abre conexiones de RED desde el servidor de la base.
+--
+--  La reaccion evidente era revocar aqui mismo. Se intento y NO SE PUEDE:
+--
+--    WARNING: no privileges could be revoked for "dblink"
+--      -> PostgreSQL lo emite cuando quien revoca no es quien concedio.
+--    ERROR 42501: permission denied for function dblink_connect_u
+--      -> `postgres` no es el dueno de la extension.
+--
+--  supautils intercepta CREATE EXTENSION y la crea con un rol privilegiado, de
+--  modo que desde `postgres` la extension no se puede revocar, ni mover de
+--  esquema, ni borrar. Se va con el proximo `db reset` y no antes.
+--
+--  Lo que queda es declararlo, que es lo que hace P47 en el arnes:
+--  `dblink` esta en su lista de extensiones toleradas, con su razon y su
+--  alcance. Cualquier OTRA extension que aparezca en `public` pone esa prueba
+--  en rojo. Produccion no tiene ninguna: no hay un solo CREATE EXTENSION en
+--  supabase/migrations. Todo esto esta en el ADR-020.
+-- ---------------------------------------------------------------------------
+
 -- ---------------------------------------------------------------- andamiaje
 create schema if not exists _c;
 
@@ -227,6 +253,29 @@ begin
     case when v_cad is null
       then ' | intentos: ' || coalesce(_c.get('conexion_errores'), '(sin registro)')
       else '' end);
+end $$;
+
+
+-- ============================================================================
+--  LOS MINIMOS DE INSTALACION, OTRA VEZ
+--
+--  Este archivo corre DESPUES de pruebas_dinero.sql, y el arnes termina
+--  devolviendo los minimos a los de produccion (50 y 100). Los tres escenarios
+--  de aqui se montan con `_p.escenario`, que crea el remate con incremento 10.
+--
+--  Resultado la primera vez: las tres pruebas en rojo con un
+--  "El incremento no puede ser menor a 50 Bs" que no tiene nada que ver con
+--  concurrencia. Una valla de dinero tumbando la prueba de una carrera.
+--
+--  Asi que este archivo se encarga de los suyos: los baja al entrar y los
+--  devuelve al salir, igual que hace con la segunda conexion.
+-- ============================================================================
+do $$
+begin
+  if to_regclass('public.ajustes_instalacion') is not null then
+    update public.ajustes_instalacion set valor = '1' where clave = 'minimo_incremento';
+    update public.ajustes_instalacion set valor = '1' where clave = 'minimo_precio_salida';
+  end if;
 end $$;
 
 
@@ -482,6 +531,16 @@ select _c.desconectar();
 do $$
 begin
   perform _p.limpiar();
+exception when others then null;
+end $$;
+
+-- Los minimos vuelven a los de produccion, como los deja el arnes.
+do $$
+begin
+  if to_regclass('public.ajustes_instalacion') is not null then
+    update public.ajustes_instalacion set valor = '50'  where clave = 'minimo_incremento';
+    update public.ajustes_instalacion set valor = '100' where clave = 'minimo_precio_salida';
+  end if;
 exception when others then null;
 end $$;
 

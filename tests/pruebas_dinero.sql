@@ -152,6 +152,54 @@ returns void language sql as $$
 $$;
 
 -- ============================================================================
+--  MINIMOS DE INSTALACION: EL ARNES LOS BAJA PARA SUS ESCENARIOS
+--
+--  El 01/10 la base dejo de aceptar incrementos por debajo de
+--  ajustes_instalacion.minimo_incremento (50 Bs en produccion). `_p.escenario`
+--  crea sus remates con incremento 10, y lo hacen 42 pruebas cuyas cuentas
+--  esperadas estan escritas sobre ese 10.
+--
+--  Habia dos salidas. Subir el escenario a 50 y rehacer la aritmetica de 42
+--  pruebas -- mucho riesgo de cambiar lo que una prueba mide sin darse cuenta.
+--  O bajar el ajuste, que es precisamente para lo que existe: un licenciatario
+--  puede ponerlo en 10 perfectamente.
+--
+--  Se baja. Y P54 lo sube a proposito para comprobar que el guardian rechaza,
+--  con lo cual queda probado algo mejor que un numero fijo: que la base obedece
+--  al AJUSTE y no a una constante escondida.
+--
+--  EN CUANTO SE BAJA, Y POR QUE NO EN 10 (corregido el 01/10)
+--
+--  El primer intento los bajo a 10 y 100, que parecia suficiente. No lo era, y
+--  el arnes lo dijo en dos lineas rojas:
+--
+--    P28 pone `incremento_minimo = 7` a mano, un fallback raro a proposito
+--    P54 mete un caballo de 20 Bs para hacer de "dato viejo" de produccion
+--
+--  Dos veces el mismo error mio: cerrar una puerta sin enumerar quien la usa
+--  (ADR-018). La leccion no es "subelo a 7": es que el arnes no mide minimos,
+--  los mide P54. Para todo lo demas el guardian tiene que estorbar lo menos
+--  posible, asi que se bajan a 1 y se acaba la familia entera de este fallo.
+--
+--  El bloque de limpieza del final los devuelve a 50 y 100, para que la base
+--  local no quede permitiendo cosas que produccion no permite. OJO: por eso
+--  `concurrencia.sql` los vuelve a bajar por su cuenta -- corre despues.
+--
+--  Si la migracion no esta aplicada, esto no hace nada y P54 se pone roja sola,
+--  que es lo correcto.
+-- ============================================================================
+do $$
+begin
+  if to_regclass('public.ajustes_instalacion') is not null then
+    update public.ajustes_instalacion set valor = '1' where clave = 'minimo_incremento';
+    update public.ajustes_instalacion set valor = '1' where clave = 'minimo_precio_salida';
+  else
+    raise warning 'ajustes_instalacion no existe: la migracion 20261001100000 no esta aplicada';
+  end if;
+end $$;
+
+
+-- ============================================================================
 --  P1 - El caballo retirado no debe entrar al pozo
 --  Defecto C1 -> se espera FALLA contra el codigo actual (tarea 1.1)
 -- ============================================================================
@@ -2638,6 +2686,7 @@ do $$
 declare
   r record;
   v_total int := 0; v_fallos int := 0; v_sin_declarar int := 0;
+  v_ext_abiertas int := 0; v_ext_toleradas int := 0; v_ext_sin_permiso int := 0;
   v_detalle text := '';
 begin
   for r in
@@ -2662,6 +2711,12 @@ begin
       ('tr_avisar_caballo',               'cerrada'),
       ('tr_avisar_recarga',               'cerrada'),
       ('tr_avisar_retiro',                'cerrada'),
+      -- ajustes de instalacion y los tres guardianes de minimos (01/10)
+      ('ajuste_numero',                    'cerrada'),
+      ('tr_ajustes_updated_at',            'cerrada'),
+      ('tr_minimo_incremento_remate',      'cerrada'),
+      ('tr_minimo_incremento_regla',       'cerrada'),
+      ('tr_minimo_precio_salida',          'cerrada'),
       -- sin uso en la aplicacion
       ('get_usernames',                   'cerrada'),
       ('promover_usuario',                'cerrada'),
@@ -2691,20 +2746,105 @@ begin
       -- informacion publica del remate: la pantalla se ve sin sesion
       ('remate_minimos',                  'anon'),
       ('listar_pujas_publicas',           'anon')
+    ),
+    -- =====================================================================
+    --  EXTENSIONES TOLERADAS EN `public`, CON SU RAZON Y SU ALCANCE
+    --
+    --  CORRECCION DEL 01/10, Y DE UN ERROR MIO (ver ADR-020).
+    --
+    --  La primera version daba por hecho que si una extension nacia abierta,
+    --  `postgres` podia cerrarla. En un Postgres pelado si. En Supabase NO:
+    --  supautils intercepta CREATE EXTENSION y la crea como un rol
+    --  privilegiado. La base lo dijo con dos mensajes que no dejan lugar a
+    --  dudas:
+    --
+    --    WARNING: no privileges could be revoked for "dblink"
+    --      -> PostgreSQL lo emite cuando quien revoca NO es quien concedio.
+    --    ERROR 42501: permission denied for function dblink_connect_u
+    --      -> `postgres` no es el dueno.
+    --
+    --  Asi que postgres no puede revocarle nada, ni moverla de esquema, ni
+    --  borrarla. Exigir que este cerrada seria exigir algo imposible, y una
+    --  prueba que pide lo imposible termina comentada.
+    --
+    --  Lo que SI se puede hacer es lo que hace el resto de este archivo:
+    --  declararla, con su razon y su alcance escritos al lado. Una extension
+    --  que no este en esta lista pone la prueba en rojo, abierta o cerrada,
+    --  porque una extension sin declarar en `public` ya es el hallazgo.
+    -- =====================================================================
+    extensiones_toleradas(extname, razon) as (values
+      ('dblink',
+       'SOLO LOCAL. La instala tests/concurrencia.sql para abrir una segunda '
+       'sesion (ADR-019). Ninguna migracion la crea, asi que produccion no la '
+       'tiene: comprobado el 01/10, no hay un solo CREATE EXTENSION en '
+       'supabase/migrations. La crea supabase_admin via supautils, de modo que '
+       'postgres no puede cerrarla; se va con el proximo db reset.')
     )
     select p.proname as nombre,
+           p.oid::regprocedure::text as firma,
            has_function_privilege('authenticated', p.oid, 'execute') as auth,
            has_function_privilege('anon',          p.oid, 'execute') as anon,
-           e.quien
+           e.quien,
+           -- De que extension viene, si viene de alguna, y de quien es esa
+           -- extension. deptype 'e' en pg_depend es exactamente eso: el objeto
+           -- existe porque lo trajo un CREATE EXTENSION. El DUENO importa
+           -- porque de el depende si podemos hacer algo al respecto.
+           ext.extname,
+           ext.dueno                       as ext_dueno,
+           -- Si esta tolerada se decide AQUI, en la consulta, no en el cuerpo
+           -- del bucle: un CTE solo es visible dentro de la consulta que lo
+           -- declara, y consultarlo desde el bucle da 42P01.
+           (t.extname is not null)         as ext_tolerada
     from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
     left join esperado e on e.nombre = p.proname
+    left join lateral (
+      select x.extname, pg_get_userbyid(x.extowner) as dueno
+      from pg_depend d
+      join pg_extension x on x.oid = d.refobjid
+      where d.objid = p.oid and d.classid = 'pg_proc'::regclass and d.deptype = 'e'
+      limit 1
+    ) ext on true
+    left join extensiones_toleradas t on t.extname = ext.extname
     where n.nspname = 'public' and p.prokind = 'f'
     order by p.proname
   loop
     v_total := v_total + 1;
 
-    if r.quien is null then
+    -- LAS FUNCIONES DE EXTENSION NO SE DECLARAN UNA POR UNA (01/10)
+    --
+    -- El censo se puso rojo con 41 "SIN DECLARAR", todas dblink: las trae
+    -- `create extension if not exists dblink` de tests/concurrencia.sql, y
+    -- PostgreSQL le da EXECUTE a PUBLIC de fabrica (doc 17, 5.8). Es el mismo
+    -- hallazgo de citext del 29/09.
+    --
+    -- Listarlas por nombre seria 41 lineas de lista blanca que no dicen nada y
+    -- que no sirven para la PROXIMA extension que alguien instale. Asi que no
+    -- se juzgan por nombre: se juzgan por clase. Una funcion de extension en
+    -- `public` tiene que estar CERRADA a anon y authenticated, se llame como se
+    -- llame. Si manana alguien instala pg_trgm o postgis, esto lo caza solo y
+    -- con un mensaje que se entiende.
+    if r.quien is null and r.extname is not null then
+      if r.ext_tolerada then
+        -- Declarada. Se cuenta para que el numero quede a la vista y nadie
+        -- crea que no esta ahi, pero no pone la prueba en rojo.
+        v_ext_toleradas := v_ext_toleradas + 1;
+        if r.auth or r.anon then v_ext_abiertas := v_ext_abiertas + 1; end if;
+      else
+        v_ext_sin_permiso := v_ext_sin_permiso + 1;
+        if v_ext_sin_permiso <= 3 then
+          v_detalle := v_detalle || ' | EXTENSION SIN DECLARAR: ' || r.extname ||
+                       ' -> ' || r.firma ||
+                       '(auth=' || r.auth::text || ',anon=' || r.anon::text ||
+                       ',dueno=' || coalesce(r.ext_dueno, '?') || ')';
+        elsif v_ext_sin_permiso = 4 then
+          v_detalle := v_detalle || ' | (...y mas de la misma extension; si tiene' ||
+                       ' que estar, declarala en extensiones_toleradas con su' ||
+                       ' razon, como dblink)';
+        end if;
+      end if;
+
+    elsif r.quien is null then
       v_sin_declarar := v_sin_declarar + 1;
       v_detalle := v_detalle || ' | SIN DECLARAR: ' || r.nombre ||
                    '(auth=' || r.auth::text || ',anon=' || r.anon::text || ')';
@@ -2727,11 +2867,15 @@ begin
   end loop;
 
   perform _p.anotar(47, 'Censo de funciones: ninguna abierta sin declarar',
-    'todas las funciones de public coinciden con lo declarado, y no hay ninguna sin declarar',
-    v_fallos = 0 and v_sin_declarar = 0 and v_total > 0,
+    'nuestras funciones coinciden con lo declarado, ninguna sin declarar, y ninguna extension en public sin declarar',
+    v_fallos = 0 and v_sin_declarar = 0 and v_ext_sin_permiso = 0 and v_total > 0,
     'funciones en public: ' || v_total::text ||
     ' | desajustes: ' || v_fallos::text ||
-    ' | sin declarar: ' || v_sin_declarar::text || v_detalle);
+    ' | sin declarar: ' || v_sin_declarar::text ||
+    ' | de extensiones declaradas: ' || v_ext_toleradas::text ||
+    ' (abiertas a anon/authenticated: ' || v_ext_abiertas::text ||
+    '; postgres no puede cerrarlas, ver ADR-020)' ||
+    ' | de extensiones SIN declarar: ' || v_ext_sin_permiso::text || v_detalle);
 exception when others then
   perform _p.anotar(47, 'Censo de funciones: ninguna abierta sin declarar',
     'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
@@ -2782,6 +2926,11 @@ begin
       ('races',              'select,insert,update,delete',   'select'),
       ('remate_price_rules', 'select,insert,update,delete',   'select'),
       ('support_settings',   'select,insert,update,delete',   'select'),
+      -- ajustes de ESTA instalacion: el panel de admin los lee para avisar
+      -- antes de guardar; solo el super admin cambia valores. Sin insert y
+      -- sin delete a proposito: las claves las crean las migraciones, y si
+      -- la app pudiera borrar minimo_incremento no se podria crear un remate.
+      ('ajustes_instalacion', 'select,update',                 ''),
       -- remates: update y delete ya cayeron en la 3.2. El insert sigue vivo
       -- porque lo usa la pantalla de crear remate; cae en la tanda 4.
       ('remates',            'select,insert',                 'select'),
@@ -3187,6 +3336,147 @@ exception when others then
 end $$;
 
 
+-- ============================================================================
+--  P54 - Los minimos de dinero los pone la INSTALACION, y la base obedece
+--
+--  LO QUE NO EXISTIA (comprobado el 01/10)
+--
+--  Jota pidio dos reglas que creia puestas: ningun incremento por debajo de
+--  50 Bs, ningun precio de salida por debajo de 100. Al buscarlas, lo unico
+--  escrito en toda la base era `incremento > 0` dentro de editar_remate, y
+--  `horses.precio_salida` no tenia NINGUNA validacion. Se podia crear un
+--  caballo en 1 Bs con incrementos de un centimo.
+--
+--  POR QUE NO SON CONSTANTES
+--
+--  50 y 100 son bolivares. Un licenciatario en otra moneda los necesita otros,
+--  y en ADR-017 ya quedo escrito que no se le impone un numero de dinero a
+--  nadie. Viven en ajustes_instalacion y la base los lee al validar.
+--
+--  Esta prueba mide las cinco cosas que importan:
+--
+--    1. incremento del remate por debajo del minimo        -> rebota
+--    2. incremento de un tramo de escalera por debajo      -> rebota
+--    3. precio de salida por debajo del minimo             -> rebota
+--    4. un caballo viejo por debajo del minimo se puede
+--       seguir editando mientras no le toques el precio    -> pasa
+--    5. subir el ajuste cambia el comportamiento al
+--       instante, sin desplegar nada                       -> rebota con el nuevo
+--
+--  La 4 es la que evita el arreglo bruto. En produccion puede haber caballos
+--  por debajo de 100 creados antes de esta regla; si el trigger los revisara
+--  en cada UPDATE, corregirle el NOMBRE a uno de ellos fallaria.
+--
+--  La 5 es la que distingue un ajuste de un hardcode.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_rem uuid; v_h1 uuid;
+  v_race uuid;
+  v_rebota_inc boolean := false;
+  v_rebota_regla boolean := false;
+  v_rebota_precio boolean := false;
+  v_viejo_editable boolean := false;
+  v_rebota_con_200 boolean := false;
+  v_detalle text := '';
+begin
+  if to_regclass('public.ajustes_instalacion') is null then
+    perform _p.anotar(54, 'Los minimos de dinero los pone la instalacion',
+      'ver arriba', false,
+      'ajustes_instalacion NO EXISTE: la migracion 20261001100000 no esta aplicada');
+    return;
+  end if;
+
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_rem   := _p.escenario(2, 100, 25);      -- se crea con el minimo todavia en 10
+  v_h1    := _p.caballo(v_rem, 1);
+  select race_id into v_race from public.remates where id = v_rem;
+
+  -- El "dato viejo" de produccion: un caballo por debajo del futuro minimo.
+  -- Sin trucos, no se desactiva ningun trigger. Esta prueba pone el ajuste ella
+  -- misma en vez de confiar en el valor que dejo el preludio: la primera version
+  -- lo hacia y se puso roja porque el preludio bajaba el incremento pero dejaba
+  -- el precio de salida en 100.
+  update public.ajustes_instalacion set valor = '1' where clave = 'minimo_precio_salida';
+  insert into public.horses (race_id, numero, nombre, precio_salida)
+  values (v_race, 99, 'Caballo viejo y barato', 20);
+
+  -- Ahora se sube el minimo, como lo haria el super admin desde ajustes.
+  update public.ajustes_instalacion set valor = '50'  where clave = 'minimo_incremento';
+  update public.ajustes_instalacion set valor = '100' where clave = 'minimo_precio_salida';
+
+  -- 1) incremento del remate por debajo
+  begin
+    update public.remates set incremento_minimo = 25 where id = v_rem;
+  exception when others then
+    v_rebota_inc := true;
+    v_detalle := v_detalle || ' | remate: ' || sqlerrm;
+  end;
+
+  -- 2) tramo de escalera por debajo
+  begin
+    insert into public.remate_price_rules (remate_id, horse_id, min_precio, max_precio, incremento)
+    values (v_rem, v_h1, 100, 1000, 10);
+  exception when others then
+    v_rebota_regla := true;
+    v_detalle := v_detalle || ' | escalera: ' || sqlerrm;
+  end;
+
+  -- 3) precio de salida por debajo
+  begin
+    insert into public.horses (race_id, numero, nombre, precio_salida)
+    values (v_race, 98, 'Caballo nuevo y barato', 99);
+  exception when others then
+    v_rebota_precio := true;
+    v_detalle := v_detalle || ' | salida: ' || sqlerrm;
+  end;
+
+  -- 4) el caballo viejo de 20 Bs se puede renombrar sin tocarle el precio
+  begin
+    update public.horses set nombre = 'Renombrado sin drama'
+    where race_id = v_race and numero = 99;
+    v_viejo_editable := true;
+  exception when others then
+    v_detalle := v_detalle || ' | VIEJO NO EDITABLE: ' || sqlerrm;
+  end;
+
+  -- 5) el ajuste manda: con el minimo en 200, un caballo de 150 rebota
+  update public.ajustes_instalacion set valor = '200' where clave = 'minimo_precio_salida';
+  begin
+    insert into public.horses (race_id, numero, nombre, precio_salida)
+    values (v_race, 97, 'Caballo de 150', 150);
+  exception when others then
+    v_rebota_con_200 := true;
+    v_detalle := v_detalle || ' | con minimo 200: ' || sqlerrm;
+  end;
+
+  -- se devuelve al valor del arnes para no ensuciar lo que venga despues
+  update public.ajustes_instalacion set valor = '1' where clave = 'minimo_incremento';
+  update public.ajustes_instalacion set valor = '1' where clave = 'minimo_precio_salida';
+
+  perform _p.anotar(54, 'Los minimos de dinero los pone la instalacion',
+    'rebotan incremento 25, tramo 10 y salida 99; el caballo viejo de 20 Bs sigue editable; con el minimo en 200 rebota uno de 150',
+    v_rebota_inc and v_rebota_regla and v_rebota_precio
+      and v_viejo_editable and v_rebota_con_200,
+    'remate=' || v_rebota_inc::text ||
+    ' escalera=' || v_rebota_regla::text ||
+    ' salida=' || v_rebota_precio::text ||
+    ' viejo_editable=' || v_viejo_editable::text ||
+    ' obedece_al_ajuste=' || v_rebota_con_200::text ||
+    v_detalle);
+exception when others then
+  -- pase lo que pase, los minimos no se quedan donde esta prueba los dejo
+  begin
+    update public.ajustes_instalacion set valor = '1' where clave = 'minimo_incremento';
+    update public.ajustes_instalacion set valor = '1' where clave = 'minimo_precio_salida';
+  exception when others then null;
+  end;
+  perform _p.anotar(54, 'Los minimos de dinero los pone la instalacion',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;
@@ -3218,4 +3508,13 @@ do $$
 begin
   delete from public.admin_actions;   -- _p.limpiar() no lo toca
   perform _p.limpiar();
+
+  -- Los minimos vuelven a los de produccion. El arnes los bajo a 10 para sus
+  -- escenarios; si se quedaran asi, la base local permitiria crear remates que
+  -- produccion rechaza, y el proximo click a mano mediria una app que no es la
+  -- que esta desplegada.
+  if to_regclass('public.ajustes_instalacion') is not null then
+    update public.ajustes_instalacion set valor = '50'  where clave = 'minimo_incremento';
+    update public.ajustes_instalacion set valor = '100' where clave = 'minimo_precio_salida';
+  end if;
 end $$;

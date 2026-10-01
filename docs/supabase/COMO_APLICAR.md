@@ -57,7 +57,7 @@ Si `$db` sale vacío, el contenedor no está arriba: `pnpm db:start` primero.
 
 ### `tests/pruebas_dinero.sql` — el arnés
 
-52 pruebas de reglas de dinero, permisos y contabilidad. Corre con **una sola conexión**. Al terminar imprime la tabla de resultados y **limpia los datos que creó**, para que la base quede vacía si después vas a abrir la aplicación contra ella.
+54 pruebas de reglas de dinero, permisos y contabilidad. Corre con **una sola conexión**. Al empezar baja los mínimos de `ajustes_instalacion` a 10/100 porque sus 42 escenarios están escritos sobre un incremento de 10; al terminar los devuelve a 50/100, los de producción. Si cortas el arnés a medias, revisa esa tabla antes de abrir la aplicación contra la base local. Al terminar imprime la tabla de resultados y **limpia los datos que creó**, para que la base quede vacía si después vas a abrir la aplicación contra ella.
 
 ### `tests/concurrencia.sql` — las carreras
 
