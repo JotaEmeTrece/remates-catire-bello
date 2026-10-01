@@ -193,6 +193,11 @@ begin
   if to_regclass('public.ajustes_instalacion') is not null then
     update public.ajustes_instalacion set valor = '1' where clave = 'minimo_incremento';
     update public.ajustes_instalacion set valor = '1' where clave = 'minimo_precio_salida';
+    -- Y la regla del 50% para retirar (01/10). P9 recarga 1000, no puja nada y
+    -- retira los 1000 para medir que dinero_casa queda en 0; con la regla
+    -- activa ese retiro rebota y P9 mide otra cosa. El porcentaje es un ajuste,
+    -- asi que se apaga aqui y P55 lo sube a 50 para comprobar el rechazo.
+    update public.ajustes_instalacion set valor = '0' where clave = 'pct_apostado_para_retirar';
   else
     raise warning 'ajustes_instalacion no existe: la migracion 20261001100000 no esta aplicada';
   end if;
@@ -2713,6 +2718,7 @@ begin
       ('tr_avisar_retiro',                'cerrada'),
       -- ajustes de instalacion y los tres guardianes de minimos (01/10)
       ('ajuste_numero',                    'cerrada'),
+      ('requisito_apuesta',                'cerrada'),
       ('tr_ajustes_updated_at',            'cerrada'),
       ('tr_minimo_incremento_remate',      'cerrada'),
       ('tr_minimo_incremento_regla',       'cerrada'),
@@ -3477,6 +3483,193 @@ exception when others then
 end $$;
 
 
+-- ============================================================================
+--  P55 - No se retira dinero que no ha pasado por el juego (la regla del 50%)
+--
+--  EL AGUJERO QUE CIERRA (reportado por Jota el 01/10)
+--
+--  Un usuario recargaba 1.000 Bs y pedia el retiro de los 1.000 sin haber
+--  pujado una sola vez. La solicitud llegaba al admin como cualquier otra.
+--  Palabras suyas: "al haber hecho la solicitud de retiro el sistema debio
+--  haberlo rebotado, en ese caso ni siquiera llega al admin."
+--
+--  DE DONDE SALE LA FORMA (investigado, no inventado)
+--
+--  Terminos de Wplay.co 4.5.5, citando el art. 1.4.2 del Acuerdo 08 de 2020 de
+--  Coljuegos: hay que haber apostado "minimo el 50% de la totalidad de los
+--  depositos realizados". Base acumulada, no la ultima recarga. La version de
+--  2022 exime los premios.
+--
+--  LAS CINCO COSAS QUE MIDE, Y POR QUE CADA UNA
+--
+--    1. Recarga 1000 y no puja -> el retiro REBOTA y no queda solicitud.
+--       Que no quede solicitud es la mitad del requisito: Jota pidio
+--       expresamente que no llegue al admin.
+--    2. Apuesta 500 (el 50% justo) -> el retiro pasa. El limite es un >=, no
+--       un >: si falla aqui, la regla esta pidiendo un bolivar de mas.
+--    3. Subirse la propia puja NO infla lo apostado. Tres pujas de 100, 150 y
+--       200 sobre el mismo caballo son 200 apostados, no 450. Sin esto,
+--       cumplir el requisito seria gratis: te subes tu propia puja cinco
+--       veces y a retirar.
+--    4. Los premios se retiran igual. Es la exencion de Wplay 2022 y es la
+--       parte menos firme de lo investigado, asi que conviene tenerla medida:
+--       si algun dia se decide quitarla, esta prueba lo dice.
+--    5. Un remate CANCELADO no cuenta. En una cancelacion se devuelve el
+--       dinero; contar esas pujas regalaria avance por algo que no paso.
+--
+--  El premio del punto 4 se acredita con un movimiento directo a proposito:
+--  lo que se mide aqui es la aritmetica de la exencion, no como llega un
+--  premio -- de eso se encargan P2 y P30 por la via real.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u uuid; v_w uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
+  r record;
+  v_rebota_sin_apostar boolean := false;
+  v_sin_solicitud      boolean := false;
+  v_pasa_con_el_50     boolean := false;
+  v_no_infla           boolean := false;
+  v_premio_libre       boolean := false;
+  v_cancelado_no_suma  boolean := false;
+  v_apostado           numeric;
+  v_detalle text := '';
+begin
+  if to_regclass('public.ajustes_instalacion') is null
+     or not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                    where n.nspname = 'public' and p.proname = 'requisito_apuesta') then
+    perform _p.anotar(55, 'No se retira dinero que no ha pasado por el juego',
+      'ver arriba', false,
+      'requisito_apuesta NO EXISTE: la migracion 20261001120000 no esta aplicada');
+    return;
+  end if;
+
+  update public.ajustes_instalacion set valor = '50' where clave = 'pct_apostado_para_retirar';
+
+  -- ---------------------------------------------------------------- 1
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan',  0);          -- SIN saldo regalado: recarga de verdad
+  perform _p.actuar_como(v_u);
+  perform public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF-P55', current_date);
+  perform _p.actuar_como(v_admin);
+  perform public.aprobar_recarga((select id from public.deposit_requests order by created_at desc limit 1));
+
+  perform _p.actuar_como(v_u);
+  begin
+    perform public.solicitar_retiro(1000, 'pago_movil', '04121234567');
+  exception when others then
+    v_rebota_sin_apostar := true;
+    v_detalle := v_detalle || ' | sin apostar: ' || sqlerrm;
+  end;
+  v_sin_solicitud := (select count(*) = 0 from public.withdraw_requests where user_id = v_u);
+
+  -- ---------------------------------------------------------------- 2
+  v_rem := _p.escenario(2, 500);
+  v_h1  := _p.caballo(v_rem, 1);
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, null, false);     -- 500 justos
+  -- se cierra el remate para que esos 500 dejen de estar comprometidos: lo que
+  -- se mide aqui es la regla del 50%, no el techo del compromiso (eso es P24).
+  perform _p.actuar_como(v_admin);
+  perform public.cerrar_remate(v_rem);
+
+  perform _p.actuar_como(v_u);
+  select * into r from public.requisito_apuesta(v_u);
+  begin
+    perform public.solicitar_retiro(1, 'pago_movil', '04121234567');
+    v_pasa_con_el_50 := true;
+  exception when others then
+    v_detalle := v_detalle || ' | con el 50 justo rebota: ' || sqlerrm;
+  end;
+  v_detalle := v_detalle || ' | tras apostar 500: recargado=' || r.recargado::text ||
+               ' apostado=' || r.apostado::text || ' requerido=' || r.requerido::text ||
+               ' cumplido=' || r.cumplido::text;
+
+  -- ---------------------------------------------------------------- 3
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 100000);
+  v_rem   := _p.escenario(2, 100);
+  v_h1    := _p.caballo(v_rem, 1);
+  v_h2    := _p.caballo(v_rem, 2);
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, 100, true);
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, 150, true);
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, 200, true);
+  select apostado into v_apostado from public.requisito_apuesta(v_u);
+  v_no_infla := (v_apostado = 200);
+  v_detalle := v_detalle || ' | tres pujas 100/150/200 al mismo caballo -> apostado=' ||
+               v_apostado::text || ' (esperado 200)';
+
+  -- ---------------------------------------------------------------- 4
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan',  0);
+  perform _p.actuar_como(v_u);
+  perform public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF-P55B', current_date);
+  perform _p.actuar_como(v_admin);
+  perform public.aprobar_recarga((select id from public.deposit_requests order by created_at desc limit 1));
+
+  select id into v_w from public.wallets where user_id = v_u;
+  update public.wallets set saldo_disponible = saldo_disponible + 300 where id = v_w;
+  insert into public.wallet_movements (wallet_id, tipo, monto, descripcion)
+  values (v_w, 'premio', 300, 'premio de prueba P55');
+
+  perform _p.actuar_como(v_u);
+  begin
+    perform public.solicitar_retiro(300, 'pago_movil', '04121234567');
+    v_premio_libre := true;
+  exception when others then
+    v_detalle := v_detalle || ' | el premio no se pudo retirar: ' || sqlerrm;
+  end;
+
+  -- y un bolivar mas tiene que rebotar: el premio se libera, la recarga no
+  begin
+    perform public.solicitar_retiro(1, 'pago_movil', '04121234567');
+    v_premio_libre := false;
+    v_detalle := v_detalle || ' | OJO: dejo retirar MAS que el premio';
+  exception when others then null;
+  end;
+
+  -- ---------------------------------------------------------------- 5
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 100000);
+  v_rem   := _p.escenario(2, 900);
+  v_h1    := _p.caballo(v_rem, 1);
+  perform _p.actuar_como(v_u);
+  perform public.hacer_puja(v_rem, v_h1, null, false);
+  perform _p.actuar_como(v_admin);
+  perform public.cancelar_remate(v_rem, 'prueba P55');
+  select apostado into v_apostado from public.requisito_apuesta(v_u);
+  v_cancelado_no_suma := (v_apostado = 0);
+  v_detalle := v_detalle || ' | tras cancelar: apostado=' || v_apostado::text || ' (esperado 0)';
+
+  update public.ajustes_instalacion set valor = '0' where clave = 'pct_apostado_para_retirar';
+
+  perform _p.anotar(55, 'No se retira dinero que no ha pasado por el juego',
+    'sin apostar rebota y no deja solicitud; con el 50% justo pasa; subirse la propia puja no infla; el premio se retira; un remate cancelado no cuenta',
+    v_rebota_sin_apostar and v_sin_solicitud and v_pasa_con_el_50
+      and v_no_infla and v_premio_libre and v_cancelado_no_suma,
+    'rebota=' || v_rebota_sin_apostar::text ||
+    ' sin_solicitud=' || v_sin_solicitud::text ||
+    ' pasa_con_50=' || v_pasa_con_el_50::text ||
+    ' no_infla=' || v_no_infla::text ||
+    ' premio_libre=' || v_premio_libre::text ||
+    ' cancelado_no_suma=' || v_cancelado_no_suma::text ||
+    v_detalle);
+exception when others then
+  begin
+    update public.ajustes_instalacion set valor = '0' where clave = 'pct_apostado_para_retirar';
+  exception when others then null;
+  end;
+  perform _p.anotar(55, 'No se retira dinero que no ha pasado por el juego',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
 -- ---------------------------------------------------------------- resumen
 \set QUIET off
 select n as "#", nombre, esperado, estado, detalle from _p.resultado order by n;
@@ -3516,5 +3709,6 @@ begin
   if to_regclass('public.ajustes_instalacion') is not null then
     update public.ajustes_instalacion set valor = '50'  where clave = 'minimo_incremento';
     update public.ajustes_instalacion set valor = '100' where clave = 'minimo_precio_salida';
+    update public.ajustes_instalacion set valor = '50'  where clave = 'pct_apostado_para_retirar';
   end if;
 end $$;

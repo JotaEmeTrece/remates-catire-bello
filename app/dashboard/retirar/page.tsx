@@ -16,6 +16,15 @@ type WalletRow = {
   saldo_disponible: string | number
   comprometido: string | number
   disponible_para_retirar: string | number
+  // La regla del 50% (migracion 20261001120000). Los calcula la base en
+  // requisito_apuesta(); aqui solo se muestran. El frontend muestra, no
+  // calcula (ADR-015): si esta pantalla hiciera su propia cuenta del
+  // requisito, acabaria diciendo un numero distinto al que la base aplica.
+  pct_requerido: string | number
+  recargado: string | number
+  apostado: string | number
+  falta_apostar: string | number
+  requisito_cumplido: boolean
 }
 
 type WithdrawRow = {
@@ -110,7 +119,20 @@ export default function RetirarPage() {
     // para dar el mensaje antes de gastar el viaje.
     const retirableAhora = wallet ? n(wallet.disponible_para_retirar) : 0
     const comprometidoAhora = wallet ? n(wallet.comprometido) : 0
+    const faltaApostar = wallet ? n(wallet.falta_apostar) : 0
+    const cumplido = wallet ? !!wallet.requisito_cumplido : true
+
     if (amount > retirableAhora) {
+      // Tres motivos distintos y tres mensajes distintos. "Saldo insuficiente"
+      // a secas obliga al usuario a adivinar cual de los tres le toco.
+      if (!cumplido && faltaApostar > 0) {
+        return setError(
+          `Te faltan ${formatMoney(faltaApostar)} Bs por apostar para poder retirar lo que recargaste. ` +
+            (retirableAhora > 0
+              ? `Ahora mismo puedes retirar ${formatMoney(retirableAhora)} Bs, que es lo que llevas ganado.`
+              : "Lo que ganes en premios sí lo puedes retirar sin esperar.")
+        )
+      }
       return setError(
         comprometidoAhora > 0
           ? `Solo puedes retirar ${formatMoney(retirableAhora)} Bs. Tienes ${formatMoney(comprometidoAhora)} Bs comprometidos en pujas que lideras.`
@@ -182,6 +204,9 @@ export default function RetirarPage() {
   const total = wallet ? n(wallet.saldo_disponible) : 0
   const comprometido = wallet ? n(wallet.comprometido) : 0
   const retirable = wallet ? n(wallet.disponible_para_retirar) : 0
+  const faltaApostar = wallet ? n(wallet.falta_apostar) : 0
+  const pctRequerido = wallet ? n(wallet.pct_requerido) : 0
+  const requisitoCumplido = wallet ? !!wallet.requisito_cumplido : true
 
   return (
     <>
@@ -204,6 +229,23 @@ export default function RetirarPage() {
           <div className="mt-1 text-sm text-amber-300">Comprometido en pujas: Bs {formatMoney(comprometido)}</div>
           <div className="mt-1 text-base font-semibold text-sky-300">Puedes retirar: Bs {formatMoney(retirable)}</div>
         </div>
+
+        {/* EL AVISO VA ANTES, NO DESPUES.
+            Si el usuario se entera de la retencion al recibir un error, ya
+            escribio el monto, le dio a enviar y lo rebotaron: eso es un
+            mensaje a soporte. Puesto aqui, es una regla que entendio. */}
+        {!requisitoCumplido && faltaApostar > 0 ? (
+          <div className="mt-3 rounded-2xl bg-amber-500/10 p-4 ring-1 ring-amber-500/30">
+            <div className="text-sm font-semibold text-amber-100">
+              Te faltan Bs {formatMoney(faltaApostar)} por apostar
+            </div>
+            <div className="mt-1 text-xs text-amber-100/90">
+              Para retirar lo que recargaste tienes que haber apostado al menos el{" "}
+              {formatMoney(pctRequerido)}% de tus recargas. Lo que ganes en premios lo puedes retirar
+              sin esperar.
+            </div>
+          </div>
+        ) : null}
 
         <form onSubmit={onSubmit} className="mt-5 space-y-3 rounded-2xl bg-gray-900/60 p-4 ring-1 ring-white/10">
           <div>
