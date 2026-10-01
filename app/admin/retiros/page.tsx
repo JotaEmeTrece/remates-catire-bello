@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
+import { useMotivos } from "@/lib/motivos"
 import { useSenal, TOPICO_CAJA, EVENTOS_CAJA } from "@/lib/realtime"
 
 /**
@@ -81,6 +82,13 @@ export default function AdminRetirosPage() {
   const [actingId, setActingId] = useState<string | null>(null)
 
   const [rows, setRows] = useState<WithdrawRow[]>([])
+  // RECHAZAR UN RETIRO AHORA EXIGE MOTIVO (migracion 20261001130000).
+  // Antes `procesar_retiro` no recibia ninguno: se rechazaba un retiro y no
+  // quedaba constancia de por que, ni para el cliente ni en la bitacora.
+  const [rechazandoId, setRechazandoId] = useState<string | null>(null)
+  const [rechazoCodigo, setRechazoCodigo] = useState("")
+  const [rechazoNota, setRechazoNota] = useState("")
+  const { motivos, error: motivosError } = useMotivos("retiro")
   const [isAdmin, setIsAdmin] = useState<boolean>(false)
 
   async function load(isRefresh = false) {
@@ -185,7 +193,37 @@ export default function AdminRetirosPage() {
     })
   }, [q, rows])
 
-  async function procesar(id: string, nuevo: "pagado" | "rechazado") {
+  function abrirRechazo(id: string) {
+    setError("")
+    setOk("")
+    setRechazandoId(id)
+    setRechazoCodigo("")
+    setRechazoNota("")
+  }
+
+  function cerrarRechazo() {
+    setRechazandoId(null)
+    setRechazoCodigo("")
+    setRechazoNota("")
+  }
+
+  async function confirmarRechazo() {
+    if (!rechazandoId) return
+    if (!rechazoCodigo) {
+      setError("Elige el motivo del rechazo.")
+      return
+    }
+    const nota = rechazoNota.trim()
+    await procesar(rechazandoId, "rechazado", rechazoCodigo, nota ? nota : null)
+    cerrarRechazo()
+  }
+
+  async function procesar(
+    id: string,
+    nuevo: "pagado" | "rechazado",
+    motivoCodigo?: string,
+    nota?: string | null
+  ) {
     setActingId(id)
     setError("")
     setOk("")
@@ -193,6 +231,8 @@ export default function AdminRetirosPage() {
     const { error: rpcErr } = await supabase.rpc("procesar_retiro", {
       p_withdraw_id: id,
       p_nuevo_estado: nuevo,
+      p_motivo_codigo: motivoCodigo ?? null,
+      p_nota: nota ?? null,
     })
 
     if (rpcErr) {
@@ -201,7 +241,11 @@ export default function AdminRetirosPage() {
       return
     }
 
-    setOk(nuevo === "pagado" ? "Retiro marcado como pagado." : "Retiro rechazado.")
+    setOk(
+      nuevo === "pagado"
+        ? "Retiro marcado como pagado."
+        : "Retiro rechazado y saldo devuelto al cliente."
+    )
     await load(true)
     setActingId(null)
   }
@@ -358,7 +402,7 @@ export default function AdminRetirosPage() {
 
                     <button
                       disabled={disabled}
-                      onClick={() => void procesar(r.id, "rechazado")}
+                      onClick={() => abrirRechazo(r.id)}
                       className={`rounded-xl py-2 text-sm font-semibold border ${
                         disabled ? "bg-zinc-950/20 border-zinc-800 text-zinc-500" : "bg-zinc-950/40 border-zinc-800"
                       }`}
@@ -378,6 +422,70 @@ export default function AdminRetirosPage() {
           </div>
         )}
       </div>
+
+      {/* El motivo del rechazo, con la misma lista que recargas.
+          Rechazar devuelve el dinero al cliente, asi que el motivo no es un
+          adorno: es lo unico que le explica el movimiento en su saldo. */}
+      {rechazandoId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-2xl bg-zinc-900/90 border border-zinc-800 p-4">
+            <div className="text-lg font-semibold">Rechazar retiro</div>
+            <p className="mt-1 text-sm text-zinc-300">
+              El saldo vuelve a la cuenta del cliente y él va a leer este motivo. La nota es
+              opcional y también la ve.
+            </p>
+
+            {motivosError ? (
+              <div className="mt-3 rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-200">
+                {motivosError}
+              </div>
+            ) : null}
+
+            <label className="mt-3 block">
+              <span className="block text-xs text-zinc-400">Motivo</span>
+              <select
+                value={rechazoCodigo}
+                onChange={(e) => setRechazoCodigo(e.target.value)}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+              >
+                <option value="">— elegir —</option>
+                {motivos.map((m) => (
+                  <option key={m.codigo} value={m.codigo}>
+                    {m.etiqueta}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="mt-3 block">
+              <span className="block text-xs text-zinc-400">Nota para el cliente (opcional)</span>
+              <textarea
+                value={rechazoNota}
+                onChange={(e) => setRechazoNota(e.target.value)}
+                rows={3}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-white/10"
+                placeholder="Ej: el teléfono no está a tu nombre"
+              />
+            </label>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={cerrarRechazo}
+                className="rounded-xl bg-zinc-950/60 border border-zinc-800 px-4 py-2 text-sm"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => void confirmarRechazo()}
+                disabled={!rechazoCodigo || actingId === rechazandoId}
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-zinc-950 disabled:opacity-60"
+              >
+                Rechazar y devolver
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   )
 }

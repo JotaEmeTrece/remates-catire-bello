@@ -6,6 +6,7 @@ import { useSenal, TOPICO_CAJA, EVENTOS_CAJA } from "@/lib/realtime"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
+import { useMotivos } from "@/lib/motivos"
 
 /**
  * Joins mini
@@ -81,7 +82,11 @@ export default function AdminRecargasPage() {
   const [error, setError] = useState("")
   const [ok, setOk] = useState("")
   const [rejectingId, setRejectingId] = useState<string | null>(null)
-  const [rejectReason, setRejectReason] = useState("")
+  // Lista de motivos + nota, no texto libre (decision de Jota, 01/10): ese
+  // texto lo escribe un operador y lo lee el cliente.
+  const [rejectCodigo, setRejectCodigo] = useState("")
+  const [rejectNota, setRejectNota] = useState("")
+  const { motivos, error: motivosError } = useMotivos("recarga")
 
   async function notifyByEmail(action: "approved" | "rejected", depositId: string, reason?: string) {
     const res = await fetch("/api/notify/recarga", {
@@ -267,29 +272,38 @@ export default function AdminRecargasPage() {
   function openRejectModal(depositId: string) {
     setError("")
     setOk("")
-    setRejectReason("")
+    setRejectCodigo("")
+    setRejectNota("")
     setRejectingId(depositId)
   }
 
   function closeRejectModal() {
     setRejectingId(null)
-    setRejectReason("")
+    setRejectCodigo("")
+    setRejectNota("")
   }
 
   async function confirmReject() {
     if (!rejectingId) return
 
-    const reason = rejectReason.trim()
-    if (!reason) {
-      setError("Debes indicar un motivo para rechazar la recarga.")
+    if (!rejectCodigo) {
+      setError("Elige el motivo del rechazo.")
       return
     }
+
+    const nota = rejectNota.trim()
+    // Lo que se le manda por correo es lo que el cliente va a leer en la app:
+    // la etiqueta del motivo, y la nota si la hay. Dos textos distintos para
+    // el mismo rechazo serian dos versiones de la misma verdad.
+    const etiqueta = motivos.find((m) => m.codigo === rejectCodigo)?.etiqueta ?? rejectCodigo
+    const reason = nota ? `${etiqueta} - ${nota}` : etiqueta
 
     setActingId(rejectingId)
 
     const { data, error: rpcErr } = await supabase.rpc("rechazar_recarga", {
       p_deposit_request_id: rejectingId,
-      p_reason: reason,
+      p_motivo_codigo: rejectCodigo,
+      p_nota: nota ? nota : null,
     })
 
     if (rpcErr) {
@@ -474,15 +488,43 @@ export default function AdminRecargasPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
           <div className="w-full max-w-md rounded-2xl bg-zinc-900/90 border border-zinc-800 p-4">
             <div className="text-lg font-semibold">Rechazar recarga</div>
-            <p className="mt-1 text-sm text-zinc-300">Indica el motivo (obligatorio).</p>
+            <p className="mt-1 text-sm text-zinc-300">
+              El cliente va a leer este motivo, así que elígelo de la lista. La nota es opcional y
+              también la ve.
+            </p>
 
-            <textarea
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              rows={4}
-              className="mt-3 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-white/10"
-              placeholder="Ej: pago no coincide"
-            />
+            {motivosError ? (
+              <div className="mt-3 rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-200">
+                {motivosError}
+              </div>
+            ) : null}
+
+            <label className="mt-3 block">
+              <span className="block text-xs text-zinc-400">Motivo</span>
+              <select
+                value={rejectCodigo}
+                onChange={(e) => setRejectCodigo(e.target.value)}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
+              >
+                <option value="">— elegir —</option>
+                {motivos.map((m) => (
+                  <option key={m.codigo} value={m.codigo}>
+                    {m.etiqueta}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="mt-3 block">
+              <span className="block text-xs text-zinc-400">Nota para el cliente (opcional)</span>
+              <textarea
+                value={rejectNota}
+                onChange={(e) => setRejectNota(e.target.value)}
+                rows={3}
+                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-white/10"
+                placeholder="Ej: el comprobante dice 450 Bs"
+              />
+            </label>
 
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
@@ -493,7 +535,7 @@ export default function AdminRecargasPage() {
               </button>
               <button
                 onClick={confirmReject}
-                disabled={!rejectReason.trim() || actingId === rejectingId}
+                disabled={!rejectCodigo || actingId === rejectingId}
                 className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-zinc-950 disabled:opacity-60"
               >
                 Rechazar

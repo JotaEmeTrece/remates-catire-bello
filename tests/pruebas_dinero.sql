@@ -2719,6 +2719,7 @@ begin
       -- ajustes de instalacion y los tres guardianes de minimos (01/10)
       ('ajuste_numero',                    'cerrada'),
       ('requisito_apuesta',                'cerrada'),
+      ('_motivo_etiqueta',                 'cerrada'),
       ('tr_ajustes_updated_at',            'cerrada'),
       ('tr_minimo_incremento_remate',      'cerrada'),
       ('tr_minimo_incremento_regla',       'cerrada'),
@@ -2937,6 +2938,11 @@ begin
       -- sin delete a proposito: las claves las crean las migraciones, y si
       -- la app pudiera borrar minimo_incremento no se podria crear un remate.
       ('ajustes_instalacion', 'select,update',                 ''),
+      -- Motivos de rechazo: los lee el panel para armar el desplegable y el
+      -- cliente para entender su rechazo. Son etiquetas, no datos de nadie.
+      -- Sin insert ni delete: los codigos los crean las migraciones, porque
+      -- un codigo que el codigo no conoce no sirve para nada.
+      ('motivos_rechazo',     'select,update',                 ''),
       -- remates: update y delete ya cayeron en la 3.2. El insert sigue vivo
       -- porque lo usa la pantalla de crear remate; cae en la tanda 4.
       ('remates',            'select,insert',                 'select'),
@@ -3524,6 +3530,7 @@ end $$;
 do $$
 declare
   v_admin uuid; v_u uuid; v_w uuid; v_rem uuid; v_h1 uuid; v_h2 uuid;
+  v_dep uuid;
   r record;
   v_rebota_sin_apostar boolean := false;
   v_sin_solicitud      boolean := false;
@@ -3550,9 +3557,14 @@ begin
   v_admin := _p.usuario('admin', 0, true);
   v_u     := _p.usuario('juan',  0);          -- SIN saldo regalado: recarga de verdad
   perform _p.actuar_como(v_u);
-  perform public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF-P55', current_date);
+  -- NO se vuelve a consultar la fila: se usa el id que DEVUELVE la funcion.
+  -- `order by created_at desc limit 1` es una trampa aqui, y nos costo una
+  -- roja en P56: `now()` es la hora de la TRANSACCION, asi que todas las
+  -- filas creadas dentro de un mismo bloque comparten `created_at`, el
+  -- `order by` queda empatado y Postgres devuelve la que quiera.
+  v_dep := (public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF-P55', current_date)).id;
   perform _p.actuar_como(v_admin);
-  perform public.aprobar_recarga((select id from public.deposit_requests order by created_at desc limit 1));
+  perform public.aprobar_recarga(v_dep);
 
   perform _p.actuar_como(v_u);
   begin
@@ -3608,9 +3620,9 @@ begin
   v_admin := _p.usuario('admin', 0, true);
   v_u     := _p.usuario('juan',  0);
   perform _p.actuar_como(v_u);
-  perform public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF-P55B', current_date);
+  v_dep := (public.solicitar_recarga(1000, 'pago_movil', '04121234567', 'REF-P55B', current_date)).id;
   perform _p.actuar_como(v_admin);
-  perform public.aprobar_recarga((select id from public.deposit_requests order by created_at desc limit 1));
+  perform public.aprobar_recarga(v_dep);
 
   select id into v_w from public.wallets where user_id = v_u;
   update public.wallets set saldo_disponible = saldo_disponible + 300 where id = v_w;
@@ -3666,6 +3678,164 @@ exception when others then
   exception when others then null;
   end;
   perform _p.anotar(55, 'No se retira dinero que no ha pasado por el juego',
+    'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
+end $$;
+
+
+-- ============================================================================
+--  P56 - El motivo del rechazo llega al cliente, y rechazar un retiro devuelve
+--
+--  LO QUE PASABA (reportado por Jota el 01/10)
+--
+--  Rechazo una recarga escribiendo el motivo y el cliente nunca lo vio. Al
+--  buscarlo salieron DOS problemas distintos, no uno:
+--
+--    - La recarga SI capturaba el motivo -- `rechazar_recarga` lo exigia -- y
+--      lo guardaba en `admin_actions.detalles->>'reason'`. Esa es la bitacora
+--      de auditoria: el sitio correcto para el rastro de quien hizo que, y el
+--      equivocado para algo que el cliente tiene que leer.
+--    - El retiro no capturaba NADA: procesar_retiro(uuid, withdraw_status)
+--      tenia dos parametros y ninguno era un motivo.
+--
+--  Decision de Jota: lista de motivos + nota opcional, no texto libre. Ese
+--  texto lo escribe un operador y lo lee un cliente.
+--
+--  LAS SEIS COSAS QUE MIDE
+--
+--    1. El motivo de una recarga rechazada queda EN LA FILA, con su etiqueta y
+--       la nota recortada. Es lo que el cliente puede leer.
+--    2. Un codigo inventado, uno del ambito equivocado (un motivo de retiro en
+--       una recarga) y la ausencia de motivo rebotan los tres, y la solicitud
+--       SIGUE PENDIENTE. Un rechazo a medias es peor que ninguno.
+--    3. La etiqueta es una FOTO: renombrar o desactivar el motivo despues no
+--       cambia lo que el cliente ya leyo.
+--    4. Rechazar un retiro devuelve el dinero Y guarda el motivo.
+--    5. PAGAR un retiro no exige motivo. Si lo exigiera, el admin no podria
+--       pagar.
+--    6. Rechazar un retiro SIN motivo rebota y NO TOCA EL DINERO. El motivo se
+--       valida antes de mover un bolivar, a proposito.
+-- ============================================================================
+do $$
+declare
+  v_admin uuid; v_u uuid; v_w uuid; v_dep uuid; v_ret uuid;
+  r record;
+  v_queda_en_la_fila boolean := false;
+  v_rebota_los_tres  boolean := false;
+  v_sigue_pendiente  boolean := false;
+  v_etiqueta_foto    boolean := false;
+  v_devuelve         boolean := false;
+  v_pagar_sin_motivo boolean := false;
+  v_sin_motivo_no_toca boolean := false;
+  v_saldo numeric; v_txt text; v_rebotes int := 0;
+  v_detalle text := '';
+begin
+  if to_regclass('public.motivos_rechazo') is null then
+    perform _p.anotar(56, 'El motivo del rechazo llega al cliente',
+      'ver arriba', false,
+      'motivos_rechazo NO EXISTE: la migracion 20261001130000 no esta aplicada');
+    return;
+  end if;
+
+  -- ---------------------------------------------------------------- 1 y 2
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan',  0);
+
+  perform _p.actuar_como(v_u);
+  -- El id lo da la funcion. Ver el comentario de P55: dentro de un mismo
+  -- bloque todas las filas comparten `created_at` y el `order by` no ordena.
+  v_dep := (public.solicitar_recarga(500, 'pago_movil', '04121234567', 'REF-P56', current_date)).id;
+
+  perform _p.actuar_como(v_admin);
+
+  begin perform public.rechazar_recarga(v_dep, 'no_existe_este_motivo', null);
+  exception when others then v_rebotes := v_rebotes + 1; end;
+  begin perform public.rechazar_recarga(v_dep, 'titular_distinto', null);   -- es de RETIRO
+  exception when others then v_rebotes := v_rebotes + 1; end;
+  begin perform public.rechazar_recarga(v_dep, null, null);
+  exception when others then v_rebotes := v_rebotes + 1; end;
+  v_rebota_los_tres := (v_rebotes = 3);
+  v_sigue_pendiente := (select estado = 'pendiente' from public.deposit_requests where id = v_dep);
+
+  perform public.rechazar_recarga(v_dep, 'monto_no_coincide', '   Pago por 450, no 500   ');
+  select estado, motivo_codigo, motivo_etiqueta, motivo_nota into r
+  from public.deposit_requests where id = v_dep;
+  v_queda_en_la_fila := (r.estado = 'rechazado'
+    and r.motivo_codigo = 'monto_no_coincide'
+    and r.motivo_etiqueta = 'El monto no coincide con el comprobante'
+    and r.motivo_nota = 'Pago por 450, no 500');
+  v_detalle := v_detalle || ' | recarga: etiqueta="' || coalesce(r.motivo_etiqueta,'(nula)') ||
+               '" nota="' || coalesce(r.motivo_nota,'(nula)') || '"';
+
+  -- ---------------------------------------------------------------- 3
+  update public.motivos_rechazo
+     set etiqueta = 'TEXTO CAMBIADO POR EL LICENCIATARIO', activo = false
+   where codigo = 'monto_no_coincide';
+  select motivo_etiqueta into v_txt from public.deposit_requests where id = v_dep;
+  v_etiqueta_foto := (v_txt = 'El monto no coincide con el comprobante');
+  update public.motivos_rechazo
+     set etiqueta = 'El monto no coincide con el comprobante', activo = true
+   where codigo = 'monto_no_coincide';
+
+  -- ---------------------------------------------------------------- 4 y 6
+  perform _p.limpiar();
+  v_admin := _p.usuario('admin', 0, true);
+  v_u     := _p.usuario('juan', 1000);
+
+  perform _p.actuar_como(v_u);
+  v_ret := (public.solicitar_retiro(400, 'pago_movil', '04121234567')).id;
+  select saldo_disponible into v_saldo from public.wallets where user_id = v_u;
+
+  -- 6 primero: sin motivo no pasa nada, ni el estado ni el dinero
+  perform _p.actuar_como(v_admin);
+  begin perform public.procesar_retiro(v_ret, 'rechazado'::withdraw_status);
+  exception when others then null; end;
+  v_sin_motivo_no_toca := (
+    (select estado = 'pendiente' from public.withdraw_requests where id = v_ret)
+    and (select saldo_disponible = v_saldo from public.wallets where user_id = v_u));
+
+  -- 4: con motivo, devuelve y guarda
+  perform public.procesar_retiro(v_ret, 'rechazado'::withdraw_status,
+                                 'datos_destino_incorrectos', 'El telefono no es del titular');
+  select estado, motivo_etiqueta, motivo_nota into r from public.withdraw_requests where id = v_ret;
+  v_devuelve := (r.estado = 'rechazado'
+    and r.motivo_etiqueta = 'Los datos de destino no son correctos'
+    and (select saldo_disponible = 1000 from public.wallets where user_id = v_u));
+  v_detalle := v_detalle || ' | retiro: etiqueta="' || coalesce(r.motivo_etiqueta,'(nula)') ||
+               '" saldo tras el rechazo=' ||
+               (select saldo_disponible from public.wallets where user_id = v_u)::text ||
+               ' (esperado 1000)';
+
+  -- ---------------------------------------------------------------- 5
+  perform _p.actuar_como(v_u);
+  -- ESTA es la que fallo: con el retiro de 400 ya rechazado en la misma
+  -- transaccion, el `order by created_at` empatado devolvia aquel en vez de
+  -- este, y "pagar" chocaba con un retiro ya procesado. La prueba decia que
+  -- pagar exigia motivo; lo que pasaba era que estaba pagando la fila
+  -- equivocada.
+  v_ret := (public.solicitar_retiro(100, 'pago_movil', '04121234567')).id;
+  perform _p.actuar_como(v_admin);
+  begin
+    perform public.procesar_retiro(v_ret, 'pagado'::withdraw_status);
+    v_pagar_sin_motivo := true;
+  exception when others then
+    v_detalle := v_detalle || ' | pagar exigio motivo: ' || sqlerrm;
+  end;
+
+  perform _p.anotar(56, 'El motivo del rechazo llega al cliente',
+    'el motivo queda en la fila con su etiqueta y nota; codigo invalido, ambito equivocado y ausencia rebotan sin cambiar el estado; la etiqueta no cambia si se renombra el motivo; rechazar un retiro devuelve el dinero; pagar no exige motivo; rechazar sin motivo no toca el dinero',
+    v_queda_en_la_fila and v_rebota_los_tres and v_sigue_pendiente
+      and v_etiqueta_foto and v_devuelve and v_pagar_sin_motivo and v_sin_motivo_no_toca,
+    'en_la_fila=' || v_queda_en_la_fila::text ||
+    ' rebotan_los_tres=' || v_rebota_los_tres::text || ' (' || v_rebotes::text || '/3)' ||
+    ' sigue_pendiente=' || v_sigue_pendiente::text ||
+    ' etiqueta_es_foto=' || v_etiqueta_foto::text ||
+    ' devuelve=' || v_devuelve::text ||
+    ' pagar_sin_motivo=' || v_pagar_sin_motivo::text ||
+    ' sin_motivo_no_toca=' || v_sin_motivo_no_toca::text ||
+    v_detalle);
+exception when others then
+  perform _p.anotar(56, 'El motivo del rechazo llega al cliente',
     'ver arriba', false, 'excepcion (' || sqlstate || '): ' || sqlerrm);
 end $$;
 

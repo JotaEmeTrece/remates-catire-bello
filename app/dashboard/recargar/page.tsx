@@ -15,6 +15,8 @@ type DepositRow = {
   referencia: string
   fecha_pago: string
   estado: string
+  motivo_etiqueta: string | null
+  motivo_nota: string | null
   created_at: string | null
 }
 
@@ -66,7 +68,10 @@ export default function RecargarPage() {
 
     const { data, error: listErr } = await supabase
       .from("deposit_requests")
-      .select("id,monto,metodo,telefono_pago,referencia,fecha_pago,estado,created_at")
+      .select(
+        // motivo_* los escribe rechazar_recarga. Ver 20261001130000.
+        "id,monto,metodo,telefono_pago,referencia,fecha_pago,estado,created_at,motivo_etiqueta,motivo_nota"
+      )
       .eq("user_id", auth.user.id)
       .order("created_at", { ascending: false })
       .limit(10)
@@ -276,6 +281,16 @@ export default function RecargarPage() {
                   <div className="flex items-center justify-between">
                     <div className="text-sm font-semibold">Bs {formatMoney(it.monto)}</div>
                     <div className="text-xs text-gray-300">{it.estado}</div>
+                    {String(it.estado).toLowerCase().includes("rech") && it.motivo_etiqueta ? (
+                      <div className="mt-2 rounded-xl bg-red-500/10 p-2 ring-1 ring-red-500/20">
+                        <div className="text-[11px] font-semibold text-red-100">
+                          {it.motivo_etiqueta}
+                        </div>
+                        {it.motivo_nota ? (
+                          <div className="mt-0.5 text-[11px] text-red-100/80">{it.motivo_nota}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="mt-1 text-xs text-gray-400">
                     Ref: {it.referencia} - Fecha: {it.fecha_pago}

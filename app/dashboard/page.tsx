@@ -41,6 +41,8 @@ type DepositRequestRow = {
   referencia: string
   fecha_pago: string
   estado: string
+  motivo_etiqueta: string | null
+  motivo_nota: string | null
   created_at: string | null
 }
 
@@ -51,6 +53,8 @@ type WithdrawRequestRow = {
   telefono_destino: string
   comentario: string | null
   estado: string
+  motivo_etiqueta: string | null
+  motivo_nota: string | null
   created_at: string | null
 }
 
@@ -213,7 +217,11 @@ export default function DashboardPage() {
     // 4) Últimas solicitudes de recarga
     const { data: dr, error: drErr } = await supabase
       .from("deposit_requests")
-      .select("id,monto,metodo,telefono_pago,referencia,fecha_pago,estado,created_at")
+      .select(
+        // motivo_* los escribe rechazar_recarga (20261001130000): el motivo del
+        // rechazo vivia solo en admin_actions, donde el cliente no entra.
+        "id,monto,metodo,telefono_pago,referencia,fecha_pago,estado,created_at,motivo_etiqueta,motivo_nota"
+      )
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(5)
@@ -224,7 +232,9 @@ export default function DashboardPage() {
     // 5) Últimas solicitudes de retiro
     const { data: wr, error: wrErr } = await supabase
       .from("withdraw_requests")
-      .select("id,monto,metodo,telefono_destino,comentario,estado,created_at")
+      .select(
+        "id,monto,metodo,telefono_destino,comentario,estado,created_at,motivo_etiqueta,motivo_nota"
+      )
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(5)
@@ -394,6 +404,14 @@ export default function DashboardPage() {
                         {d.estado}
                       </span>
                     </div>
+                    {String(d.estado).toLowerCase().includes("rech") && d.motivo_etiqueta ? (
+                      <div className="mt-2 rounded-xl bg-red-500/10 p-2 ring-1 ring-red-500/20">
+                        <div className="text-[11px] font-semibold text-red-100">{d.motivo_etiqueta}</div>
+                        {d.motivo_nota ? (
+                          <div className="mt-0.5 text-[11px] text-red-100/80">{d.motivo_nota}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -430,6 +448,14 @@ export default function DashboardPage() {
                         {w.estado}
                       </span>
                     </div>
+                    {String(w.estado).toLowerCase().includes("rech") && w.motivo_etiqueta ? (
+                      <div className="mt-2 rounded-xl bg-red-500/10 p-2 ring-1 ring-red-500/20">
+                        <div className="text-[11px] font-semibold text-red-100">{w.motivo_etiqueta}</div>
+                        {w.motivo_nota ? (
+                          <div className="mt-0.5 text-[11px] text-red-100/80">{w.motivo_nota}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {w.comentario ? <div className="mt-2 text-xs text-zinc-500">{w.comentario}</div> : null}
                   </div>
                 ))}
