@@ -7,6 +7,7 @@ import type { Dispatch, SetStateAction } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
+import SelectorFechaHora, { nombreDiaDeIso } from "@/app/components/SelectorFechaHora"
 // La escalera vive en lib/escalera.ts desde el 01/10: la pantalla de
 // MODIFICAR un remate necesita exactamente lo mismo, y copiarla habria sido
 // crear la segunda implementacion de una regla que ya existe (ADR-015).
@@ -30,37 +31,9 @@ type HorseDraft = {
   precio_salida: string
 }
 
-const CARACAS_TZ = "America/Caracas"
 
-function formatDateInTz(d: Date, timeZone: string) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d)
-}
 
-function formatTimeInTz(d: Date, timeZone: string) {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(d)
-}
 
-function weekdayInTz(d: Date, timeZone: string) {
-  return new Intl.DateTimeFormat("es-VE", { timeZone, weekday: "long" }).format(d)
-}
-
-function splitIsoDate(dateIso: string) {
-  if (!dateIso) return { dd: "", mm: "", yy: "" }
-  const parts = dateIso.split("-")
-  if (parts.length !== 3) return { dd: "", mm: "", yy: "" }
-  return { dd: parts[2], mm: parts[1], yy: parts[0].slice(-2) }
-}
 
 function parseDateParts(ddRaw: string, mmRaw: string, yyRaw: string) {
   const dd = ddRaw.trim().padStart(2, "0")
@@ -76,17 +49,6 @@ function parseDateParts(ddRaw: string, mmRaw: string, yyRaw: string) {
   return `${yyyy}-${mm}-${dd}`
 }
 
-function formatTime12hFrom24(time24: string) {
-  if (!time24) return ""
-  const parts = time24.split(":")
-  if (parts.length < 2) return ""
-  const h24 = Number(parts[0])
-  const m = parts[1]
-  if (!Number.isFinite(h24)) return ""
-  const isPm = h24 >= 12
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
-  return `${h12}:${m} ${isPm ? "pm" : "am"}`
-}
 
 function parseTime12hTo24(raw: string) {
   const s = String(raw || "")
@@ -116,21 +78,6 @@ function buildCaracasTs(dateIso: string, time24: string) {
   return `${dateIso}T${t}-04:00`
 }
 
-function caracasNowParts() {
-  const d = new Date()
-  const dateIso = formatDateInTz(d, CARACAS_TZ)
-  const time24 = formatTimeInTz(d, CARACAS_TZ)
-  const { dd, mm, yy } = splitIsoDate(dateIso)
-  return {
-    dateIso,
-    time24,
-    dd,
-    mm,
-    yy,
-    time12: formatTime12hFrom24(time24),
-    weekday: weekdayInTz(d, CARACAS_TZ),
-  }
-}
 
 function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16)
@@ -173,12 +120,32 @@ export default function AdminCrearRematePage() {
   const [racePais, setRacePais] = useState("Venezuela")
   const [raceHipodromo, setRaceHipodromo] = useState("La Rinconada")
   const [raceNumeroCarreraText, setRaceNumeroCarreraText] = useState("1")
-  const nowCaracas = caracasNowParts()
-  const [raceFechaDD, setRaceFechaDD] = useState(nowCaracas.dd)
-  const [raceFechaMM, setRaceFechaMM] = useState(nowCaracas.mm)
-  const [raceFechaAA, setRaceFechaAA] = useState(nowCaracas.yy)
-  const [raceHora, setRaceHora] = useState(formatTime12hFrom24("15:00:00"))
-  const [raceDia, setRaceDia] = useState(nowCaracas.weekday ? nowCaracas.weekday.charAt(0).toUpperCase() + nowCaracas.weekday.slice(1) : "")
+  // =========================================================================
+  //  FECHAS Y HORAS: VACIAS AL ENTRAR (01/10/2026)
+  //
+  //  Venian prellenadas con el momento de abrir el formulario. Como crear un
+  //  remate toma unos minutos, la hora de apertura YA HABIA PASADO cuando el
+  //  admin le daba a Crear, y el boton se quedaba gris sin decir por que.
+  //  Jota lo encontro asi y tardo en dar con la causa.
+  //
+  //  Peticion suya: vacias, y con selects para no teclear. El componente es
+  //  app/components/SelectorFechaHora.tsx y habla el mismo idioma que este
+  //  estado (dd / mm / aa + hora en 12h), asi que el guardado y la validacion
+  //  no cambian.
+  //
+  //  Y se fueron los dos efectos espejo que copiaban la fecha y la hora de la
+  //  carrera al cierre del remate: con el cierre ya opcional, un espejo que lo
+  //  rellena solo hace imposible dejarlo vacio.
+  // =========================================================================
+  const [raceFechaDD, setRaceFechaDD] = useState("")
+  const [raceFechaMM, setRaceFechaMM] = useState("")
+  const [raceFechaAA, setRaceFechaAA] = useState("")
+  const [raceHora, setRaceHora] = useState("")
+  // El nombre del dia se RELLENA desde la fecha elegida en vez de salir del
+  // reloj. Antes traia el dia de hoy aunque la carrera fuera el sabado, asi que
+  // el admin tenia dos datos para un mismo hecho y uno de los dos estaba mal.
+  // Sigue siendo editable: hay hipodromos que escriben "Domingo - Clasico".
+  const [raceDia, setRaceDia] = useState("")
   const [raceDistancia, setRaceDistancia] = useState("")
 
   // =========================
@@ -190,29 +157,14 @@ export default function AdminCrearRematePage() {
   const [salidaPorDefecto, setSalidaPorDefecto] = useState("100")
   const [porcentajeCasa, setPorcentajeCasa] = useState("25")
   const [remateTipo, setRemateTipo] = useState<"vivo" | "adelantado">("vivo")
-  const [opensDD, setOpensDD] = useState(nowCaracas.dd)
-  const [opensMM, setOpensMM] = useState(nowCaracas.mm)
-  const [opensAA, setOpensAA] = useState(nowCaracas.yy)
-  const [opensTime, setOpensTime] = useState(nowCaracas.time12 || "12:00 am")
-  const [closesDD, setClosesDD] = useState(raceFechaDD)
-  const [closesMM, setClosesMM] = useState(raceFechaMM)
-  const [closesAA, setClosesAA] = useState(raceFechaAA)
-  const [closesTime, setClosesTime] = useState(raceHora || nowCaracas.time12 || "12:00 am")
-  const [closeTouched, setCloseTouched] = useState(false)
-
-  useEffect(() => {
-    if (!closeTouched) {
-      setClosesDD(raceFechaDD)
-      setClosesMM(raceFechaMM)
-      setClosesAA(raceFechaAA)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [raceFechaDD, raceFechaMM, raceFechaAA])
-
-  useEffect(() => {
-    if (!closeTouched && raceHora.trim()) setClosesTime(raceHora)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [raceHora])
+  const [opensDD, setOpensDD] = useState("")
+  const [opensMM, setOpensMM] = useState("")
+  const [opensAA, setOpensAA] = useState("")
+  const [opensTime, setOpensTime] = useState("")
+  const [closesDD, setClosesDD] = useState("")
+  const [closesMM, setClosesMM] = useState("")
+  const [closesAA, setClosesAA] = useState("")
+  const [closesTime, setClosesTime] = useState("")
 
   const raceFechaISO = useMemo(() => parseDateParts(raceFechaDD, raceFechaMM, raceFechaAA), [raceFechaDD, raceFechaMM, raceFechaAA])
   const raceHora24 = useMemo(() => parseTime12hTo24(raceHora), [raceHora])
@@ -879,49 +831,6 @@ export default function AdminCrearRematePage() {
                 />
               </div>
               <div>
-                <label className="text-sm text-zinc-200">Fecha (DD/MM/AA)</label>
-                <div className="mt-1 flex items-center gap-1">
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={raceFechaDD}
-                    onChange={(e) => setRaceFechaDD(e.target.value)}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="DD"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={raceFechaMM}
-                    onChange={(e) => setRaceFechaMM(e.target.value)}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="MM"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={raceFechaAA}
-                    onChange={(e) => setRaceFechaAA(e.target.value)}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="AA"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-sm text-zinc-200">Hora</label>
-                <input
-                  value={raceHora}
-                  onChange={(e) => setRaceHora(e.target.value)}
-                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="1:30 pm"
-                />
-              </div>
-              <div>
                 <label className="text-sm text-zinc-200">Distancia (m)</label>
                 <input
                   inputMode="numeric"
@@ -932,6 +841,21 @@ export default function AdminCrearRematePage() {
                 />
               </div>
             </div>
+
+            <SelectorFechaHora
+              etiqueta="Cuándo corre la carrera"
+              valor={{ dd: raceFechaDD, mm: raceFechaMM, aa: raceFechaAA, hora12: raceHora }}
+              onChange={(v) => {
+                setRaceFechaDD(v.dd)
+                setRaceFechaMM(v.mm)
+                setRaceFechaAA(v.aa)
+                setRaceHora(v.hora12)
+                // El dia sigue a la fecha. Si el admin lo habia personalizado,
+                // elegir otra fecha lo vuelve a poner: la fecha manda.
+                const iso = v.dd && v.mm && v.aa ? `20${v.aa}-${v.mm}-${v.dd}` : ""
+                setRaceDia(nombreDiaDeIso(iso))
+              }}
+            />
 
             <div>
               <label className="text-sm text-zinc-200">N° carrera (texto)</label>
@@ -1007,103 +931,32 @@ export default function AdminCrearRematePage() {
                   <option value="adelantado">Adelantado</option>
                 </select>
               </div>
-              <div>
-                <label className="text-sm text-zinc-200">Apertura (fecha)</label>
-                <div className="mt-1 flex items-center gap-1">
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={opensDD}
-                    onChange={(e) => setOpensDD(e.target.value)}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="DD"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={opensMM}
-                    onChange={(e) => setOpensMM(e.target.value)}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="MM"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={opensAA}
-                    onChange={(e) => setOpensAA(e.target.value)}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="AA"
-                  />
-                </div>
-              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-sm text-zinc-200">Apertura (hora)</label>
-                <input
-                  value={opensTime}
-                  onChange={(e) => setOpensTime(e.target.value)}
-                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="10:30 am"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-zinc-200">Cierre (fecha)</label>
-                <div className="mt-1 flex items-center gap-1">
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={closesDD}
-                    onChange={(e) => {
-                      setClosesDD(e.target.value)
-                      setCloseTouched(true)
-                    }}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="DD"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={closesMM}
-                    onChange={(e) => {
-                      setClosesMM(e.target.value)
-                      setCloseTouched(true)
-                    }}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="MM"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={closesAA}
-                    onChange={(e) => {
-                      setClosesAA(e.target.value)
-                      setCloseTouched(true)
-                    }}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="AA"
-                  />
-                </div>
-              </div>
-            </div>
+            <SelectorFechaHora
+              etiqueta="Apertura del remate"
+              valor={{ dd: opensDD, mm: opensMM, aa: opensAA, hora12: opensTime }}
+              onChange={(v) => {
+                setOpensDD(v.dd)
+                setOpensMM(v.mm)
+                setOpensAA(v.aa)
+                setOpensTime(v.hora12)
+              }}
+              ayuda="Desde este momento se puede pujar."
+            />
 
-            <div>
-              <label className="text-sm text-zinc-200">Cierre (hora)</label>
-              <input
-                value={closesTime}
-                onChange={(e) => {
-                  setClosesTime(e.target.value)
-                  setCloseTouched(true)
-                }}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="7:00 pm"
-              />
-            </div>
+            <SelectorFechaHora
+              etiqueta="Cierre del remate"
+              opcional
+              valor={{ dd: closesDD, mm: closesMM, aa: closesAA, hora12: closesTime }}
+              onChange={(v) => {
+                setClosesDD(v.dd)
+                setClosesMM(v.mm)
+                setClosesAA(v.aa)
+                setClosesTime(v.hora12)
+              }}
+              ayuda="Déjalo vacío si vas a cerrar el remate a mano."
+            />
           </div>
         </section>
         {/* Como sube el precio.

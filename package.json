@@ -10,7 +10,8 @@
     "db:start": "npx -y supabase@2.118.0 start",
     "db:stop": "npx -y supabase@2.118.0 stop",
     "db:reset": "npx -y supabase@2.118.0 db reset",
-    "db:push:produccion": "npx -y supabase@2.118.0 db push"
+    "db:push:produccion": "npx -y supabase@2.118.0 db push",
+    "test:fechas": "node tests/fechas.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",

@@ -6,6 +6,7 @@ import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { useSenal, topicoRemate, EVENTOS_REMATE } from "@/lib/realtime"
 import { supabase } from "@/lib/supabaseClient"
+import SelectorFechaHora, { nombreDiaDeIso } from "@/app/components/SelectorFechaHora"
 // La misma escalera que crear-remate, no una copia (ADR-015).
 import {
   type PriceRuleDraft,
@@ -377,11 +378,14 @@ export default function AdminRemateDetailPage() {
         opens_dd: openParts.dd,
         opens_mm: openParts.mm,
         opens_aa: openParts.yy,
-        opens_time: toCaracasTime12(rem.opens_at) || "7:00 am",
+        // Vacio si la base lo tiene vacio. Antes caia en "7:00 am" / "7:00 pm",
+        // asi que un remate SIN cierre se iba con un cierre inventado en cuanto
+        // alguien abria esta pantalla y guardaba cualquier otro cambio.
+        opens_time: toCaracasTime12(rem.opens_at) || "",
         closes_dd: closeParts.dd,
         closes_mm: closeParts.mm,
         closes_aa: closeParts.yy,
-        closes_time: toCaracasTime12(rem.closes_at) || "7:00 pm",
+        closes_time: toCaracasTime12(rem.closes_at) || "",
       })
 
       const { data: ra, error: raErr } = await supabase
@@ -1283,48 +1287,30 @@ export default function AdminRemateDetailPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-xs text-zinc-400">Fecha (DD/MM/AA)</label>
-                <div className="mt-1 flex items-center gap-1">
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={raceDraft?.fecha_dd ?? ""}
-                    onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, fecha_dd: e.target.value } : prev))}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="DD"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={raceDraft?.fecha_mm ?? ""}
-                    onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, fecha_mm: e.target.value } : prev))}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="MM"
-                  />
-                  <span className="text-zinc-500">/</span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={2}
-                    value={raceDraft?.fecha_aa ?? ""}
-                    onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, fecha_aa: e.target.value } : prev))}
-                    className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                    placeholder="AA"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-zinc-400">Hora (am/pm)</label>
-                <input
-                  value={raceDraft?.hora_programada ?? ""}
-                  onChange={(e) => setRaceDraft((prev) => (prev ? { ...prev, hora_programada: e.target.value } : prev))}
-                  className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                  placeholder="1:30 pm"
-                />
-              </div>
-            </div>
+            <SelectorFechaHora
+              etiqueta="Cuándo corre la carrera"
+              valor={{
+                dd: raceDraft?.fecha_dd ?? "",
+                mm: raceDraft?.fecha_mm ?? "",
+                aa: raceDraft?.fecha_aa ?? "",
+                hora12: raceDraft?.hora_programada ?? "",
+              }}
+              onChange={(v) =>
+                setRaceDraft((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        fecha_dd: v.dd,
+                        fecha_mm: v.mm,
+                        fecha_aa: v.aa,
+                        hora_programada: v.hora12,
+                        // El dia sigue a la fecha, como en crear-remate.
+                        dia: v.dd && v.mm && v.aa ? nombreDiaDeIso(`20${v.aa}-${v.mm}-${v.dd}`) : prev.dia,
+                      }
+                    : prev
+                )
+              }
+            />
 
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -1417,101 +1403,43 @@ export default function AdminRemateDetailPage() {
               />
             </div>
 
-            <div>
-              <label className="text-xs text-zinc-400">Apertura (fecha)</label>
-              <div className="mt-1 flex items-center gap-1">
-                <input
-                  inputMode="numeric"
-                  maxLength={2}
-                  value={remateDraft?.opens_dd ?? ""}
-                  onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_dd: e.target.value } : prev))}
-                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                  placeholder="DD"
-                />
-                <span className="text-zinc-500">/</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={2}
-                  value={remateDraft?.opens_mm ?? ""}
-                  onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_mm: e.target.value } : prev))}
-                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                  placeholder="MM"
-                />
-                <span className="text-zinc-500">/</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={2}
-                  value={remateDraft?.opens_aa ?? ""}
-                  onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_aa: e.target.value } : prev))}
-                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                  placeholder="AA"
-                />
-              </div>
-            </div>
+            <SelectorFechaHora
+              etiqueta="Apertura del remate"
+              valor={{
+                dd: remateDraft?.opens_dd ?? "",
+                mm: remateDraft?.opens_mm ?? "",
+                aa: remateDraft?.opens_aa ?? "",
+                hora12: remateDraft?.opens_time ?? "",
+              }}
+              onChange={(v) =>
+                setRemateDraft((prev) =>
+                  prev
+                    ? { ...prev, opens_dd: v.dd, opens_mm: v.mm, opens_aa: v.aa, opens_time: v.hora12 }
+                    : prev
+                )
+              }
+              ayuda="Desde este momento se puede pujar."
+            />
 
-            <div>
-              <label className="text-xs text-zinc-400">Apertura (hora)</label>
-              <input
-                value={remateDraft?.opens_time ?? ""}
-                onChange={(e) => setRemateDraft((prev) => (prev ? { ...prev, opens_time: e.target.value } : prev))}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="10:30 am"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-zinc-400">Cierre (fecha)</label>
-              <div className="mt-1 flex items-center gap-1">
-                <input
-                  inputMode="numeric"
-                  maxLength={2}
-                  value={remateDraft?.closes_dd ?? ""}
-                  onChange={(e) => {
-                    setRemateDraft((prev) => (prev ? { ...prev, closes_dd: e.target.value } : prev))
-                    setCloseTouched(true)
-                  }}
-                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                  placeholder="DD"
-                />
-                <span className="text-zinc-500">/</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={2}
-                  value={remateDraft?.closes_mm ?? ""}
-                  onChange={(e) => {
-                    setRemateDraft((prev) => (prev ? { ...prev, closes_mm: e.target.value } : prev))
-                    setCloseTouched(true)
-                  }}
-                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                  placeholder="MM"
-                />
-                <span className="text-zinc-500">/</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={2}
-                  value={remateDraft?.closes_aa ?? ""}
-                  onChange={(e) => {
-                    setRemateDraft((prev) => (prev ? { ...prev, closes_aa: e.target.value } : prev))
-                    setCloseTouched(true)
-                  }}
-                  className="w-14 rounded-xl bg-zinc-950/60 border border-zinc-800 px-2 py-2 text-sm text-center"
-                  placeholder="AA"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-zinc-400">Cierre (hora)</label>
-              <input
-                value={remateDraft?.closes_time ?? ""}
-                onChange={(e) => {
-                  setRemateDraft((prev) => (prev ? { ...prev, closes_time: e.target.value } : prev))
-                  setCloseTouched(true)
-                }}
-                className="mt-1 w-full rounded-xl bg-zinc-950/60 border border-zinc-800 px-3 py-2 text-sm"
-                placeholder="7:00 pm"
-              />
-            </div>
+            <SelectorFechaHora
+              etiqueta="Cierre del remate"
+              opcional
+              valor={{
+                dd: remateDraft?.closes_dd ?? "",
+                mm: remateDraft?.closes_mm ?? "",
+                aa: remateDraft?.closes_aa ?? "",
+                hora12: remateDraft?.closes_time ?? "",
+              }}
+              onChange={(v) => {
+                setCloseTouched(true)
+                setRemateDraft((prev) =>
+                  prev
+                    ? { ...prev, closes_dd: v.dd, closes_mm: v.mm, closes_aa: v.aa, closes_time: v.hora12 }
+                    : prev
+                )
+              }}
+              ayuda="Déjalo vacío si vas a cerrar el remate a mano."
+            />
           </div>
         </section>
 
